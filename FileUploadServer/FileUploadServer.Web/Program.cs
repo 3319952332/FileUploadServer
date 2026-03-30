@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.OpenApi.Models;
 using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Infrastructure.Data;
@@ -13,7 +15,12 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorPages();
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        // 配置JSON序列化将所有时间转换为本地时区（北京时间）输出，方便判断过期
+        options.JsonSerializerOptions.Converters.Add(new DateTimeConverter());
+    });
 
 // Add PostgreSQL database
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -107,3 +114,28 @@ if (!Directory.Exists(uploadsPath))
 }
 
 app.Run();
+
+// 自定义DateTime转换器，将UTC时间转换为本地时区（北京时间）输出
+internal class DateTimeConverter : JsonConverter<DateTime>
+{
+    private static readonly TimeZoneInfo _localTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai");
+    
+    public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        return reader.GetDateTime();
+    }
+
+    public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
+    {
+        // 如果输入是UTC，转换为本地时间再输出
+        if (value.Kind == DateTimeKind.Utc)
+        {
+            var localTime = TimeZoneInfo.ConvertTimeFromUtc(value, _localTimeZone);
+            writer.WriteStringValue(localTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff"));
+        }
+        else
+        {
+            writer.WriteStringValue(value.ToString("yyyy-MM-ddTHH:mm:ss.fffffff"));
+        }
+    }
+}
