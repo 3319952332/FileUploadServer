@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fileupload-postgres
+    environment:
+      POSTGRES_DB: fileupload
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: fileupload-app
+    ports:
+      - "5005:5005"
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=postgres;Database=fileupload;Username=postgres;Password=postgres"
+      ASPNETCORE_URLS: "http://0.0.0.0:5005"
+      TZ: Asia/Shanghai
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
