@@ -26,3 +26,11 @@ obj/
 # Uploads
 FileUploadServer/FileUploadServer.Web/wwwroot/uploads/*
 !FileUploadServer/FileUploadServer.Web/wwwroot/uploads/.gitkeep
+
+# Skills (local only, not tracked in git)
+skills/
+
+# App secrets (don't commit sensitive configs)
+**/appsettings.json
+**/appsettings.*.json
+!**/appsettings.json.example

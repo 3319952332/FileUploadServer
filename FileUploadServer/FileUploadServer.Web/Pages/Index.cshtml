@@ -1,5 +1,6 @@
 @page
 @model IndexModel
+@using System.IO
 @{
     ViewData["Title"] = "文件列表 - 文件上传下载服务器";
     // 从查询参数获取当前key
@@ -9,9 +10,17 @@
 <div class="container mt-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h1>📁 文件列表</h1>
-        <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#uploadModal">
-            ⬆️ 上传文件
-        </button>
+        <div class="d-flex gap-2">
+            @if (Model.Files.Any(f => f.Id > 0))
+            {
+                <button type="button" class="btn btn-outline-danger btn-sm" id="btnBatchDelete" onclick="toggleBatchMode()">
+                    🗑️ 批量删除
+                </button>
+            }
+            <button type="button" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#uploadModal">
+                ⬆️ 上传文件
+            </button>
+        </div>
     </div>
 
     @if (Model.Files.Count == 0)
@@ -22,36 +31,139 @@
     }
     else
     {
-        <div class="table-responsive">
-            <table class="table table-striped table-hover">
-                <thead>
-                    <tr>
-                        <th>文件名</th>
-                        <th>大小</th>
-                        <th>上传时间</th>
-                        <th>操作</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var file in Model.Files)
-                    {
+        <!-- 桌面端：表格布局 -->
+        <div class="d-none d-md-block">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
                         <tr>
-                            <td>@file.FileName</td>
-                            <td>@FormatFileSize(file.FileSize)</td>
-                            <td>@TimeZoneInfo.ConvertTimeFromUtc(file.UploadedAt, TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"))</td>
-                            <td>
-                                <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary" download>⬇️ 下载</a>
-                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="d-inline" onsubmit="return confirm('确定要删除这个文件吗？');">
-                                    <input type="hidden" name="key" value="@currentKey" />
-                                    <button type="submit" class="btn btn-sm btn-outline-danger ms-1">🗑️ 删除</button>
-                                </form>
-                            </td>
+                            <th class="batch-col">
+                                <input type="checkbox" id="selectAllDesktop" class="batch-select-all" onchange="toggleSelectAll(this)" />
+                            </th>
+                            <th>预览</th>
+                            <th>文件名</th>
+                            <th>大小</th>
+                            <th>上传时间</th>
+                            <th>操作</th>
                         </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var file in Model.Files)
+                        {
+                            <tr>
+                                <td class="batch-col">
+                                    <input type="checkbox" class="batch-checkbox" data-id="@file.Id" />
+                                </td>
+                                <td>
+                                    @if (IsImage(file.FileName))
+                                    {
+                                        <a href="/Download/@file.Id?key=@currentKey&preview=true" target="_blank" rel="noopener noreferrer">
+                                            <img src="/Download/@file.Id?key=@currentKey&preview=true" style="max-height: 50px; max-width: 80px; object-fit: contain;" class="border rounded" />
+                                        </a>
+                                    }
+                                    else if (IsVideo(file.FileName))
+                                    {
+                                        <span class="text-muted">🎬 视频</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted">—</span>
+                                    }
+                                </td>
+                                <td class="text-break">@file.FileName</td>
+                                <td>@FormatFileSize(file.FileSize)</td>
+                                <td>@TimeZoneInfo.ConvertTimeFromUtc(file.UploadedAt, TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"))</td>
+                                <td>
+                                    <div class="d-flex flex-row gap-1">
+                                        <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary" download>⬇️ 下载</a>
+                                        <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0" onsubmit="return confirm('确定要删除这个文件吗？');">
+                                            <input type="hidden" name="key" value="@currentKey" />
+                                            <button type="submit" class="btn btn-sm btn-outline-danger">🗑️ 删除</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 手机端：照片墙瀑布流，两列错落布局 -->
+        <div class="d-md-none container mx-auto" style="columns: 2; column-gap: 12px;">
+            @foreach (var file in Model.Files)
+            {
+                <div class="card mb-3 shadow-sm" style="break-inside: avoid; position: relative; overflow: visible;">
+                    <input type="checkbox" class="batch-checkbox position-absolute" data-id="@file.Id" style="width: 28px; height: 28px; top: 8px; left: 8px; z-index: 9999; background: #fff; border: 2px solid #333; opacity: 1 !important; accent-color: #0d6efd; cursor: pointer; pointer-events: auto;" />
+                    @if (IsImage(file.FileName))
+                    {
+                        <a href="/Download/@file.Id?key=@currentKey&preview=true" target="_blank" rel="noopener noreferrer">
+                            <img src="/Download/@file.Id?key=@currentKey&preview=true" style="width: 100%; height: auto; object-fit: contain; background-color: #f8f9fa;" />
+                        </a>
+                        <div class="card-footer p-1">
+                            <div class="d-flex gap-1">
+                                <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary flex-fill" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;" download>⬇️</a>
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0 flex-fill" onsubmit="return confirm('确定要删除这个文件吗？');">
+                                    <input type="hidden"name="key" value="@currentKey" />
+                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;">🗑️</button>
+                                </form>
+                            </div>
+                        </div>
                     }
-                </tbody>
-            </table>
+                    else if (IsVideo(file.FileName))
+                    {
+                        <video controls preload="metadata" style="width: 100%; height: auto; background-color: #000;">
+                            <source src="/Download/@file.Id?key=@currentKey&preview=true" type="@file.ContentType" />
+                            你的浏览器不支持视频播放
+                        </video>
+                        <div class="card-footer p-1">
+                            <div class="d-flex gap-1">
+                                <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary flex-fill" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;" download>⬇️</a>
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0 flex-fill" onsubmit="return confirm('确定要删除这个文件吗？');">
+                                    <input type="hidden"name="key" value="@currentKey" />
+                                    <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;">🗑️</button>
+                                </form>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="card-body p-2 text-center">
+                            <p class="card-title text-break mb-1" style="font-size: 0.75rem; margin-bottom: 0.25rem !important;">@file.FileName</p>
+                            <div class="text-center text-muted" style="font-size: 0.65rem; margin-bottom: 0.5rem !important;">
+                                <span>@FormatFileSize(file.FileSize)</span>
+                            </div>
+                            <div class="d-grid gap-1">
+                                <a href="/Download/@file.Id?key=@currentKey" class="btn btn-outline-primary" style="font-size: 0.7rem; padding: 0.2rem 0.4rem;" download>⬇️ 下载</a>
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0" onsubmit="return confirm('确定要删除这个文件吗？');">
+                                    <input type="hidden" name="key" value="@currentKey" />
+                                    <button type="submit" class="btn btn-outline-danger w-100" style="font-size: 0.7rem; padding: 0.2rem 0.4rem;">🗑️ 删除</button>
+                                </form>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+        <!-- 批量删除按钮手机端 - 放在两列容器外面，保证通栏 -->
+        <div class="d-md-none" id="batchDeleteBarMobile" style="display: none;">
+            <div class="card p-2 mt-3">
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-danger flex-fill" onclick="confirmBatchDelete('@currentKey')">删除选中</button>
+                    <button type="button" class="btn btn-secondary flex-fill" onclick="exitBatchMode()">取消</button>
+                </div>
+            </div>
         </div>
     }
+    <!-- 批量删除按钮桌面端 - 放在表格外面 -->
+    <div class="d-none d-md-block" id="batchDeleteBarDesktop" style="display: none;">
+        <div class="card p-2 mt-3">
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-danger flex-fill" onclick="confirmBatchDelete('@currentKey')">删除选中</button>
+                <button type="button" class="btn btn-secondary flex-fill" onclick="exitBatchMode()">取消</button>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- 上传弹窗 -->
@@ -66,8 +178,8 @@
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label for="formFile" class="form-label">选择文件</label>
-                        <input class="form-control" type="file" id="formFile" name="UploadedFile" required>
+                        <label for="formFile" class="form-label">选择文件（可多选）</label>
+                        <input class="form-control" type="file" id="formFile" name="UploadedFiles" multiple required>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -92,8 +204,204 @@
         }
         return $"{size:0.##} {sizes[order]}";
     }
+
+    bool IsImage(string fileName)
+    {
+        string name = fileName.ToLowerInvariant();
+        return name.EndsWith(".jpg") || name.EndsWith(".jpeg") || name.EndsWith(".png") || name.EndsWith(".gif") || name.EndsWith(".webp") || name.EndsWith(".bmp");
+    }
+
+    bool IsVideo(string fileName)
+    {
+        string name = fileName.ToLowerInvariant();
+        return name.EndsWith(".mp4") || name.EndsWith(".webm") || name.EndsWith(".ogg") || name.EndsWith(".mov") || name.EndsWith(".avi");
+    }
 }
+
+<style>
+/* 初始隐藏，由JS控制显示 */
+.batch-col {
+    display: none;
+    width: 40px;
+    min-width: 40px;
+    max-width: 40px;
+    text-align: center;
+    vertical-align: middle;
+}
+.batch-checkbox, .batch-select-all {
+    display: none;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    accent-color: #0d6efd;
+    opacity: 1 !important;
+    margin: 0;
+}
+#batchDeleteBarDesktop,
+#batchDeleteBarMobile {
+    display: none;
+}
+</style>
 
 @section Scripts {
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let batchMode = false;
+
+// 页面加载完成后默认普通模式，点击按钮进入批量模式
+
+function toggleBatchMode() {
+    batchMode = !batchMode;
+    const container = document.querySelector('.container');
+    const btn = document.getElementById('btnBatchDelete');
+    if (!btn) return;
+    
+    if (batchMode) {
+        container.classList.add('batch-mode');
+        btn.classList.add('btn-danger');
+        btn.classList.remove('btn-outline-danger');
+        // 直接显示所有复选框，加important确保优先级足够
+        document.querySelectorAll('.batch-col').forEach(col => {
+            col.style.setProperty('display', 'table-cell', 'important');
+        });
+        document.querySelectorAll('.batch-checkbox, .batch-select-all').forEach(cb => {
+            cb.style.setProperty('display', 'block', 'important');
+        });
+        const isDesktop = window.innerWidth >= 768;
+        const barDesktop = document.getElementById('batchDeleteBarDesktop');
+        const barMobile = document.getElementById('batchDeleteBarMobile');
+        if (barDesktop) barDesktop.style.setProperty('display', isDesktop ? 'block' : 'none', 'important');
+        if (barMobile) barMobile.style.setProperty('display', isDesktop ? 'none' : 'block', 'important');
+    } else {
+        container.classList.remove('batch-mode');
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-outline-danger');
+        // 隐藏所有复选框
+        document.querySelectorAll('.batch-col').forEach(col => {
+            col.style.setProperty('display', 'none', 'important');
+        });
+        document.querySelectorAll('.batch-checkbox, .batch-select-all').forEach(cb => {
+            cb.style.setProperty('display', 'none', 'important');
+        });
+        const barDesktop = document.getElementById('batchDeleteBarDesktop');
+        if (barDesktop) barDesktop.style.setProperty('display', 'none', 'important');
+        const barMobile = document.getElementById('batchDeleteBarMobile');
+        if (barMobile) barMobile.style.setProperty('display', 'none', 'important');
+        // 清空所有选择
+        document.querySelectorAll('.batch-checkbox, .batch-select-all').forEach(cb => cb.checked = false);
+    }
+}
+
+function exitBatchMode() {
+    batchMode = false;
+    const container = document.querySelector('.container');
+    const btn = document.getElementById('btnBatchDelete');
+    if (btn) {
+        container.classList.remove('batch-mode');
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-outline-danger');
+    }
+    // 隐藏所有复选框
+    document.querySelectorAll('.batch-col').forEach(col => {
+        col.style.setProperty('display', 'none', 'important');
+    });
+    document.querySelectorAll('.batch-checkbox, .batch-select-all').forEach(cb => {
+        cb.style.setProperty('display', 'none', 'important');
+    });
+    const barDesktop = document.getElementById('batchDeleteBarDesktop');
+    if (barDesktop) barDesktop.style.setProperty('display', 'none', 'important');
+    const barMobile = document.getElementById('batchDeleteBarMobile');
+    if (barMobile) barMobile.style.setProperty('display', 'none', 'important');
+    // 清空所有选择
+    document.querySelectorAll('.batch-checkbox, .batch-select-all').forEach(cb => cb.checked = false);
+}
+
+function toggleSelectAll(checkbox) {
+    const isChecked = checkbox.checked;
+    document.querySelectorAll('.batch-checkbox').forEach(cb => cb.checked = isChecked);
+}
+
+document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('batch-select-all')) {
+        const isChecked = e.target.checked;
+        document.querySelectorAll('.batch-checkbox').forEach(cb => cb.checked = isChecked);
+    }
+});
+
+function confirmBatchDelete(key) {
+    const selectedIds = Array.from(document.querySelectorAll('.batch-checkbox:checked'))
+        .map(cb => parseInt(cb.getAttribute('data-id')))
+        .filter(id => !isNaN(id));
+    
+    if (selectedIds.length === 0) {
+        alert('请先选择要删除的文件');
+        return;
+    }
+    
+    if (!confirm(`确定要删除选中的 ${selectedIds.length} 个文件吗？此操作不可撤销！`)) {
+        return;
+    }
+    
+    // 创建form提交批量删除
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = window.location.pathname + '?handler=BatchDelete';
+    
+    // 添加key
+    const inputKey = document.createElement('input');
+    inputKey.type = 'hidden';
+    inputKey.name = 'key';
+    inputKey.value = key;
+    form.appendChild(inputKey);
+    
+    // 添加ids
+    selectedIds.forEach(id => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'ids[]';
+        input.value = id;
+        form.appendChild(input);
+    });
+    
+    // 添加防伪造token
+    const token = document.querySelector('input[name="__RequestVerificationToken"]')?.value;
+    if (token) {
+        const inputToken = document.createElement('input');
+        inputToken.type = 'hidden';
+        inputToken.name = '__RequestVerificationToken';
+        inputToken.value = token;
+        form.appendChild(inputToken);
+    }
+    
+    document.body.appendChild(form);
+    form.submit();
+}
+
+// 处理页面从缓存返回的情况（比如点开图片后退），恢复正确的显示状态
+window.addEventListener('pageshow', function() {
+    if (batchMode) {
+        // 恢复批量模式的UI显示
+        const container = document.querySelector('.container');
+        const btn = document.getElementById('btnBatchDelete');
+        if (container) container.classList.add('batch-mode');
+        if (btn) {
+            btn.classList.add('btn-danger');
+            btn.classList.remove('btn-outline-danger');
+        }
+        // 显示所有复选框
+        document.querySelectorAll('.batch-col').forEach(col => {
+            col.style.setProperty('display', 'table-cell', 'important');
+        });
+        document.querySelectorAll('.batch-checkbox, .batch-select-all').forEach(cb => {
+            cb.style.setProperty('display', 'block', 'important');
+        });
+        // 显示对应的删除栏
+        const isDesktop = window.innerWidth >= 768;
+        const barDesktop = document.getElementById('batchDeleteBarDesktop');
+        const barMobile = document.getElementById('batchDeleteBarMobile');
+        if (barDesktop) barDesktop.style.setProperty('display', isDesktop ? 'block' : 'none', 'important');
+        if (barMobile) barMobile.style.setProperty('display', isDesktop ? 'none' : 'block', 'important');
+    }
+});
+</script>
 }

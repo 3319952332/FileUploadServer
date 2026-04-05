@@ -21,7 +21,7 @@ public class IndexModel : PageModel
     public List<FileItem> Files { get; set; } = new();
 
     [BindProperty]
-    public IFormFile? UploadedFile { get; set; }
+    public List<IFormFile>? UploadedFiles { get; set; }
 
     [BindProperty(SupportsGet = true)]
     public string? key { get; set; }
@@ -33,15 +33,13 @@ public class IndexModel : PageModel
 
     public async Task<IActionResult> OnPostAsync()
     {
-        if (UploadedFile == null || UploadedFile.Length == 0)
+        if (UploadedFiles == null || UploadedFiles.Count == 0 || UploadedFiles.All(f => f.Length == 0))
         {
-            ModelState.AddModelError(string.Empty, "请选择一个文件");
+            ModelState.AddModelError(string.Empty, "请选择至少一个文件");
             Files = await _repository.GetAllAsync();
             return Page();
         }
 
-        // 生成唯一存储文件名
-        var storedFileName = Guid.NewGuid().ToString() + Path.GetExtension(UploadedFile.FileName);
         var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
 
         if (!Directory.Exists(uploadsPath))
@@ -49,26 +47,32 @@ public class IndexModel : PageModel
             Directory.CreateDirectory(uploadsPath);
         }
 
-        var filePath = Path.Combine(uploadsPath, storedFileName);
-
-        using (var stream = new FileStream(filePath, FileMode.Create))
+        foreach (var uploadedFile in UploadedFiles.Where(f => f.Length > 0))
         {
-            await UploadedFile.CopyToAsync(stream);
+            // 生成唯一存储文件名
+            var storedFileName = Guid.NewGuid().ToString() + Path.GetExtension(uploadedFile.FileName);
+            var filePath = Path.Combine(uploadsPath, storedFileName);
+
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await uploadedFile.CopyToAsync(stream);
+            }
+
+            var fileItem = new FileItem
+            {
+                FileName = uploadedFile.FileName,
+                StoredFileName = storedFileName,
+                FileSize = uploadedFile.Length,
+                ContentType = uploadedFile.ContentType ?? "application/octet-stream",
+                UploadedAt = DateTime.UtcNow
+            };
+
+            await _repository.AddAsync(fileItem);
         }
 
-        var fileItem = new FileItem
-        {
-            FileName = UploadedFile.FileName,
-            StoredFileName = storedFileName,
-            FileSize = UploadedFile.Length,
-            ContentType = UploadedFile.ContentType ?? "application/octet-stream",
-            UploadedAt = DateTime.UtcNow
-        };
-
-        await _repository.AddAsync(fileItem);
         await _repository.SaveChangesAsync();
 
-        _logger.LogInformation("文件上传成功: {FileName}, 大小: {Size} bytes", fileItem.FileName, fileItem.FileSize);
+        _logger.LogInformation("批量上传完成: {Count} 个文件上传成功", UploadedFiles.Count(f => f.Length > 0));
 
         if (!string.IsNullOrEmpty(key))
         {
@@ -95,6 +99,46 @@ public class IndexModel : PageModel
 
         await _repository.DeleteAsync(file);
         await _repository.SaveChangesAsync();
+
+        if (!string.IsNullOrEmpty(key))
+        {
+            return RedirectToPage(new { key = key });
+        }
+        return RedirectToPage();
+    }
+
+    public async Task<IActionResult> OnPostBatchDeleteAsync([FromForm] int[] ids)
+    {
+        if (ids == null || ids.Length == 0)
+        {
+            ModelState.AddModelError(string.Empty, "请选择至少一个文件");
+            Files = await _repository.GetAllAsync();
+            return Page();
+        }
+
+        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
+        int deletedCount = 0;
+
+        foreach (var id in ids)
+        {
+            var file = await _repository.GetByIdAsync(id);
+            if (file != null)
+            {
+                // Delete physical file
+                var filePath = Path.Combine(uploadsPath, file.StoredFileName);
+                if (System.IO.File.Exists(filePath))
+                {
+                    System.IO.File.Delete(filePath);
+                }
+
+                await _repository.DeleteAsync(file);
+                deletedCount++;
+            }
+        }
+
+        await _repository.SaveChangesAsync();
+
+        _logger.LogInformation("批量删除完成: {Count} 个文件已删除", deletedCount);
 
         if (!string.IsNullOrEmpty(key))
         {

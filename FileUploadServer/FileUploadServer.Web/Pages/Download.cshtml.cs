@@ -16,7 +16,7 @@ public class DownloadModel : PageModel
         _env = env;
     }
 
-    public async Task<IActionResult> OnGetAsync(int id)
+    public async Task<IActionResult> OnGetAsync(int id, bool? preview)
     {
         var file = await _repository.GetByIdAsync(id);
         if (file == null)
@@ -33,6 +33,15 @@ public class DownloadModel : PageModel
         }
 
         var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
-        return File(fileBytes, file.ContentType, file.FileName);
+        if (preview == true)
+        {
+            // 预览模式：inline 直接在浏览器打开，不下载
+            return File(fileBytes, file.ContentType);
+        }
+        else
+        {
+            // 下载模式：attachment 强制下载
+            return File(fileBytes, file.ContentType, file.FileName);
+        }
     }
 }

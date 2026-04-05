@@ -13,6 +13,19 @@ Environment.SetEnvironmentVariable("TZ", "Asia/Shanghai");
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 配置最大请求大小 1GB
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    options.ValueLengthLimit = int.MaxValue;
+    options.MultipartBodyLengthLimit = 1073741824; // 1GB
+    options.MemoryBufferThreshold = 10485760; // 10MB in memory before streaming to disk
+});
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = 1073741824; // 1GB
+});
+
 // Add services to the container.
 builder.Services.AddRazorPages();
 builder.Services.AddControllers()

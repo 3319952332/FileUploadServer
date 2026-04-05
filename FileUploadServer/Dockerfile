@@ -3,13 +3,12 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # 复制项目文件
-COPY FileUploadServer.slnx ./
 COPY FileUploadServer.Core/FileUploadServer.Core.csproj FileUploadServer.Core/
 COPY FileUploadServer.Infrastructure/FileUploadServer.Infrastructure.csproj FileUploadServer.Infrastructure/
 COPY FileUploadServer.Web/FileUploadServer.Web.csproj FileUploadServer.Web/
 
 # 还原包
-RUN dotnet restore
+RUN dotnet restore FileUploadServer.Web/FileUploadServer.Web.csproj
 
 # 复制所有源码
 COPY . .
