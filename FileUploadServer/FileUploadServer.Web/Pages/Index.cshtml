@@ -219,9 +219,9 @@
 }
 
 <style>
-/* 初始隐藏，由JS控制显示 */
+/* 初始隐藏，由JS控制显示 - 强制优先级确保默认不显示 */
 .batch-col {
-    display: none;
+    display: none !important;
     width: 40px;
     min-width: 40px;
     max-width: 40px;
@@ -229,7 +229,7 @@
     vertical-align: middle;
 }
 .batch-checkbox, .batch-select-all {
-    display: none;
+    display: none !important;
     width: 20px;
     height: 20px;
     cursor: pointer;
@@ -239,7 +239,7 @@
 }
 #batchDeleteBarDesktop,
 #batchDeleteBarMobile {
-    display: none;
+    display: none !important;
 }
 </style>
 
