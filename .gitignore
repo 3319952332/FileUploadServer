@@ -34,3 +34,6 @@ skills/
 **/appsettings.json
 **/appsettings.*.json
 !**/appsettings.json.example
+
+# Publish output
+publish/
