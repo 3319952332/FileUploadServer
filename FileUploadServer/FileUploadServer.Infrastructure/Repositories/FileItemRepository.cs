@@ -48,4 +48,10 @@ public class FileItemRepository : IFileItemRepository
     {
         await _context.SaveChangesAsync();
     }
+
+    /// <inheritdoc />
+    public IQueryable<FileItem> GetQueryable()
+    {
+        return _context.Files.AsQueryable();
+    }
 }

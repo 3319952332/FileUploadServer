@@ -4,7 +4,9 @@ using Microsoft.OpenApi.Models;
 using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Infrastructure.Data;
 using FileUploadServer.Infrastructure.Repositories;
+using FileUploadServer.Infrastructure.Services;
 using FileUploadServer.Web.Middleware;
+using FileUploadServer.Web.Services;
 using Microsoft.EntityFrameworkCore;
 
 // 设置时区为北京时间
@@ -44,6 +46,15 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // Add repositories
 builder.Services.AddScoped<IFileItemRepository, FileItemRepository>();
+
+// Add permission service
+builder.Services.AddScoped<IPermissionService, PermissionService>();
+
+// Add IP whitelist service
+builder.Services.AddScoped<IIpWhitelistService, IpWhitelistService>();
+
+// Add background cleanup service
+builder.Services.AddHostedService<BackgroundCleanupService>();
 
 // Add Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();

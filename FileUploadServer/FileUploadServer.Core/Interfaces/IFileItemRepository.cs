@@ -31,4 +31,9 @@ public interface IFileItemRepository
     /// 保存更改
     /// </summary>
     Task SaveChangesAsync();
+
+    /// <summary>
+    /// 获取可查询的文件集合（用于权限过滤）
+    /// </summary>
+    IQueryable<FileItem> GetQueryable();
 }

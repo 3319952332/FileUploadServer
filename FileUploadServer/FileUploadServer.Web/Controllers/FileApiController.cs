@@ -1,6 +1,8 @@
 using FileUploadServer.Core.Entities;
 using FileUploadServer.Core.Interfaces;
+using FileUploadServer.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace FileUploadServer.Web.Controllers;
 
@@ -10,47 +12,91 @@ public class FileApiController : ControllerBase
 {
     private readonly IFileItemRepository _repository;
     private readonly IWebHostEnvironment _env;
+    private readonly IPermissionService _permissionService;
+    private readonly AppDbContext _dbContext;
 
-    public FileApiController(IFileItemRepository repository, IWebHostEnvironment env)
+    public FileApiController(
+        IFileItemRepository repository,
+        IWebHostEnvironment env,
+        IPermissionService permissionService,
+        AppDbContext dbContext)
     {
         _repository = repository;
         _env = env;
+        _permissionService = permissionService;
+        _dbContext = dbContext;
     }
 
     /// <summary>
-    /// 获取所有文件列表
+    /// 获取当前API密钥
+    /// </summary>
+    private ApiKey? GetCurrentApiKey()
+    {
+        return HttpContext.Items["CurrentApiKey"] as ApiKey;
+    }
+
+    /// <summary>
+    /// 获取所有文件列表（按权限过滤）
     /// </summary>
     [HttpGet]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<ActionResult<List<FileItem>>> GetAll()
     {
-        var files = await _repository.GetAllAsync();
+        var currentKey = GetCurrentApiKey();
+        if (currentKey == null)
+        {
+            return Unauthorized();
+        }
+
+        var allFilesQuery = _repository.GetQueryable().OrderByDescending(f => f.UploadedAt);
+        var accessibleFiles = _permissionService.GetAccessibleFilesQuery(currentKey, allFilesQuery);
+        var files = await accessibleFiles.ToListAsync();
+
         return Ok(files);
     }
 
     /// <summary>
-    /// 获取单个文件信息
+    /// 获取单个文件信息（按权限检查）
     /// </summary>
     [HttpGet("{id}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<FileItem>> GetById(int id)
     {
+        var currentKey = GetCurrentApiKey();
+        if (currentKey == null)
+        {
+            return Unauthorized();
+        }
+
         var file = await _repository.GetByIdAsync(id);
         if (file == null)
         {
             return NotFound();
         }
+
+        if (!await _permissionService.CanAccessFileAsync(id, currentKey))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
         return Ok(file);
     }
 
     /// <summary>
-    /// 上传文件
+    /// 上传文件（自动关联当前密钥）
     /// </summary>
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status201Created)]
     public async Task<ActionResult<FileItem>> Upload(IFormFile file)
     {
+        var currentKey = GetCurrentApiKey();
+        if (currentKey == null)
+        {
+            return Unauthorized();
+        }
+
         if (file == null || file.Length == 0)
         {
             return BadRequest("文件不能为空");
@@ -78,7 +124,8 @@ public class FileApiController : ControllerBase
             StoredFileName = storedFileName,
             FileSize = file.Length,
             ContentType = file.ContentType ?? "application/octet-stream",
-            UploadedAt = DateTime.UtcNow
+            UploadedAt = DateTime.UtcNow,
+            ApiKeyId = currentKey.Id
         };
 
         await _repository.AddAsync(fileItem);
@@ -88,17 +135,29 @@ public class FileApiController : ControllerBase
     }
 
     /// <summary>
-    /// 删除文件
+    /// 删除文件（按权限检查）
     /// </summary>
     [HttpDelete("{id}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Delete(int id)
     {
+        var currentKey = GetCurrentApiKey();
+        if (currentKey == null)
+        {
+            return Unauthorized();
+        }
+
         var file = await _repository.GetByIdAsync(id);
         if (file == null)
         {
             return NotFound();
+        }
+
+        if (!await _permissionService.CanAccessFileAsync(id, currentKey))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         // 删除物理文件
@@ -116,17 +175,29 @@ public class FileApiController : ControllerBase
     }
 
     /// <summary>
-    /// 下载文件
+    /// 下载文件（按权限检查）
     /// </summary>
     [HttpGet("download/{id}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<IActionResult> Download(int id)
     {
+        var currentKey = GetCurrentApiKey();
+        if (currentKey == null)
+        {
+            return Unauthorized();
+        }
+
         var file = await _repository.GetByIdAsync(id);
         if (file == null)
         {
             return NotFound();
+        }
+
+        if (!await _permissionService.CanAccessFileAsync(id, currentKey))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");

@@ -21,4 +21,9 @@ public class AppDbContext : DbContext
     /// API密钥表
     /// </summary>
     public DbSet<ApiKey> ApiKeys { get; set; }
+
+    /// <summary>
+    /// IP白名单表
+    /// </summary>
+    public DbSet<IpWhitelist> IpWhitelists { get; set; }
 }

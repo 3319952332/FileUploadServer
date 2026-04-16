@@ -34,4 +34,14 @@ public class FileItem
     /// 上传时间
     /// </summary>
     public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// 关联的API密钥ID
+    /// </summary>
+    public int? ApiKeyId { get; set; }
+
+    /// <summary>
+    /// 导航属性：关联的API密钥
+    /// </summary>
+    public ApiKey? ApiKey { get; set; }
 }

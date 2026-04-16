@@ -36,6 +36,11 @@ public class ApiKey
     public bool IsDeleted { get; set; } = false;
 
     /// <summary>
+    /// 密钥类型（字符串存储：Admin/Temporary）
+    /// </summary>
+    public string KeyType { get; set; } = "Admin";
+
+    /// <summary>
     /// 检查密钥是否有效
     /// </summary>
     public bool IsValid()

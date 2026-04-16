@@ -1,143 +1,137 @@
 # FileUploadServer
 
-一个简单、带临时密钥鉴权的文件上传分享服务器，基于 ASP.NET Core 10.0 开发。
+一个简单、带分级权限系统的文件上传分享服务器，基于 ASP.NET Core 10.0 开发。
 
 ## 功能特点
 
-- 🔐 **临时密钥鉴权**：所有访问需要携带有效密钥，密钥支持自动过期、手动删除
-- 🌐 **局域网可访问**：默认监听 `0.0.0.0:5005`，支持局域网内设备访问
-- 🕐 **自动过期**：密钥默认1小时过期，即使忘记删除也会自动失效
-- 📝 **网页管理**：自带简洁网页，可以直接在网页上传/删除文件
-- 🚀 **简单部署**：依赖PostgreSQL，用EF Core自动建表，一键运行
+- 🔐 **分级权限系统**
+  - **Admin Key（管理密钥）：** 可管理所有文件，仅内网可申请
+  - **Temporary Key（临时密钥）：** 仅能访问自有文件，公网可申请，过期后文件自动删除
+- 🛡️ **IP白名单保护**
+  - 公网申请临时密钥需要IP在白名单中
+  - 白名单管理仅内网可操作
+  - 支持添加/删除/查看白名单IP
+- 🌐 **公网部署**：监听 `0.0.0.0:7000`，支持公网访问
+- 🕐 **自动过期清理**：后台服务每小时自动清理过期临时密钥及其关联文件
+- 📝 **网页管理**：自带简洁网页，权限控制覆盖API和网页端
+- 🚀 **简单部署**：依赖PostgreSQL，支持SQL脚本升级
 
 ## 技术栈
 
 - 后端：ASP.NET Core 10.0
-- 数据库：PostgreSQL
+- 数据库：PostgreSQL（端口5432）
 - 鉴权：自定义API Key中间件
 - ORM：Entity Framework Core
+- 后台服务：IHostedService 自动清理
 
-## 本地部署步骤
+## 权限说明
 
-### 1. 环境准备
+### 密钥类型
 
-- 安装 .NET 10.0 SDK
-- 安装 PostgreSQL 12+
+| 类型 | 申请方式 | 权限 | 过期后 |
+|------|----------|------|--------|
+| Admin | 内网（localhost） | 管理所有文件 | - |
+| Temporary | 公网API | 仅访问自有文件 | 文件自动删除 |
 
-### 2. 初始化数据库
+### 权限规则
 
-```bash
-# 进入PostgreSQL命令行
-sudo -u postgres psql
+| 操作 | Admin Key | Temporary Key |
+|------|-----------|---------------|
+| GET /api/files | 返回所有文件 | 仅返回自有文件 |
+| GET /api/files/{id} | 可访问所有 | 仅可访问自有 |
+| POST /api/files | 可上传 | 可上传（自动关联） |
+| DELETE /api/files/{id} | 可删除所有 | 仅可删除自有 |
+| 网页访问 | 可管理所有 | 仅可管理自有 |
 
-# 创建数据库和用户
-CREATE DATABASE fileupload;
-CREATE USER postgres WITH PASSWORD 'your-password';
-GRANT ALL PRIVILEGES ON DATABASE fileupload TO postgres;
-\q
-```
+## 远程部署（生产环境）
 
-### 3. 修改连接字符串
+### 服务器信息
 
-编辑 `FileUploadServer.Web/appsettings.json`，修改连接字符串中的密码：
+- **地址：** 111.229.53.125
+- **端口：** 7000
+- **数据库：** PostgreSQL（端口5432）
 
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Database=fileupload;Username=postgres;Password=your-password"
-  }
-}
-```
+### 数据库升级
 
-### 4. 执行数据库迁移
+使用SQL脚本升级（不使用EF Core迁移）：
 
 ```bash
-# 在项目根目录执行
-dotnet ef database update
+# 在远程服务器执行
+psql -h localhost -p 5432 -U postgres -d fileupload -f upgrade_v2.sql
 ```
 
-这一步会自动创建所需的表结构：
-- `ApiKeys`：存储访问密钥
-- `Files`：存储文件信息
-
-### 5. 运行项目
+### 启动服务
 
 ```bash
-cd FileUploadServer.Web
-dotnet run
+cd /home/ubuntu/fileuploadserver
+nohup dotnet FileUploadServer.Web.dll --urls "http://0.0.0.0:7000" > fileupload.log 2>&1 &
 ```
-
-启动后访问：`http://localhost:5005`
 
 ## 使用说明
 
-### 管理员操作（仅localhost可调用）
-
-只有本机可以创建/删除密钥，外部访问必须携带有效密钥。
-
-#### 创建新密钥
+### 公网申请临时密钥（需要IP在白名单中）
 
 ```bash
-curl -X POST "http://localhost:5005/api/admin/keys?description=my-upload&expireMinutes=60"
+curl -X POST "http://111.229.53.125:7000/api/public/keys?description=temp-share&expireMinutes=60"
+```
+
+### IP白名单管理（仅localhost可调用）
+
+#### 查看白名单
+```bash
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "curl http://localhost:7000/api/admin/whitelist"
+```
+
+#### 添加IP到白名单
+```bash
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "curl -X POST 'http://localhost:7000/api/admin/whitelist?ipAddress=你的IP&description=描述'"
+```
+
+#### 从白名单移除IP
+```bash
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "curl -X DELETE http://localhost:7000/api/admin/whitelist/{ID}"
 ```
 
 参数：
 - `description`：密钥备注说明
-- `expireMinutes`：过期时间（分钟，默认60）
+- `expireMinutes`：过期时间（分钟，最大1440分钟=24小时）
 
-返回示例：
-```json
-{
-  "id": 1,
-  "key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "description": "my-upload",
-  "createdAt": "2026-03-30T00:00:00Z",
-  "expiresAt": "2026-03-30T01:00:00Z",
-  "isDeleted": false
-}
-```
-
-#### 列出所有密钥
+### 管理员操作（仅localhost可调用）
 
 ```bash
-curl http://localhost:5005/api/admin/keys
-```
+# SSH到远程服务器后执行
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125
 
-#### 删除密钥
+# 创建管理密钥
+curl -X POST "http://localhost:7000/api/admin/keys?description=admin-key&expireMinutes=1440&keyType=Admin"
 
-```bash
-curl -X DELETE "http://localhost:5005/api/admin/keys/{key}"
-```
+# 列出所有密钥
+curl http://localhost:7000/api/admin/keys
 
-#### 清理过期密钥
-
-```bash
-curl -X DELETE http://localhost:5005/api/admin/keys/cleanup
+# 清理过期密钥
+curl -X DELETE http://localhost:7000/api/admin/keys/cleanup
 ```
 
 ### 用户访问
 
 访问首页（带密钥）：
 ```
-http://your-server-ip:5005?key={your-key}
+http://111.229.53.125:7000?key={your-key}
 ```
 
-上传文件：
-表单需要包含 `key` 字段，可以直接在网页上传
+## 本地开发
 
-下载文件：
+### 环境准备
+
+- 安装 .NET 10.0 SDK
+- 安装 PostgreSQL 12+
+
+### 运行项目
+
+```bash
+cd FileUploadServer.Web
+dotnet run
 ```
-http://your-server-ip:5005/api/files/download/{file-id}?key={your-key}
-```
-
-## 工作流示例
-
-1. 需要分享文件时：
-   - 本机调用创建接口生成临时密钥
-   - 将带密钥的下载链接发给对方
-2. 使用完成后：
-   - 调用删除接口立即失效链接
-   - 忘记删除也会在设定时间后自动过期
 
 ## 许可
 

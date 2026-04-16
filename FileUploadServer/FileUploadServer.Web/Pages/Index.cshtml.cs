@@ -1,7 +1,9 @@
 using FileUploadServer.Core.Entities;
 using FileUploadServer.Core.Interfaces;
+using FileUploadServer.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
 
 namespace FileUploadServer.Web.Pages;
 
@@ -10,12 +12,21 @@ public class IndexModel : PageModel
     private readonly IFileItemRepository _repository;
     private readonly ILogger<IndexModel> _logger;
     private readonly IWebHostEnvironment _env;
+    private readonly IPermissionService _permissionService;
+    private readonly AppDbContext _dbContext;
 
-    public IndexModel(IFileItemRepository repository, ILogger<IndexModel> logger, IWebHostEnvironment env)
+    public IndexModel(
+        IFileItemRepository repository,
+        ILogger<IndexModel> logger,
+        IWebHostEnvironment env,
+        IPermissionService permissionService,
+        AppDbContext dbContext)
     {
         _repository = repository;
         _logger = logger;
         _env = env;
+        _permissionService = permissionService;
+        _dbContext = dbContext;
     }
 
     public List<FileItem> Files { get; set; } = new();
@@ -26,17 +37,51 @@ public class IndexModel : PageModel
     [BindProperty(SupportsGet = true)]
     public string? key { get; set; }
 
+    private ApiKey? _currentApiKey;
+
+    private async Task<ApiKey?> GetCurrentApiKeyAsync()
+    {
+        if (string.IsNullOrEmpty(key))
+        {
+            return null;
+        }
+
+        return await _dbContext.ApiKeys
+            .FirstOrDefaultAsync(k => k.Key == key && !k.IsDeleted && k.ExpiresAt > DateTime.UtcNow);
+    }
+
     public async Task OnGetAsync()
     {
-        Files = await _repository.GetAllAsync();
+        _currentApiKey = await GetCurrentApiKeyAsync();
+
+        if (_currentApiKey == null)
+        {
+            Files = new List<FileItem>();
+            return;
+        }
+
+        var allFilesQuery = _repository.GetQueryable().OrderByDescending(f => f.UploadedAt);
+        var accessibleFiles = _permissionService.GetAccessibleFilesQuery(_currentApiKey, allFilesQuery);
+        Files = await accessibleFiles.ToListAsync();
     }
 
     public async Task<IActionResult> OnPostAsync()
     {
+        _currentApiKey = await GetCurrentApiKeyAsync();
+
+        if (_currentApiKey == null)
+        {
+            ModelState.AddModelError(string.Empty, "无效的API密钥");
+            Files = new List<FileItem>();
+            return Page();
+        }
+
         if (UploadedFiles == null || UploadedFiles.Count == 0 || UploadedFiles.All(f => f.Length == 0))
         {
             ModelState.AddModelError(string.Empty, "请选择至少一个文件");
-            Files = await _repository.GetAllAsync();
+            var allFilesQuery = _repository.GetQueryable().OrderByDescending(f => f.UploadedAt);
+            var accessibleFiles = _permissionService.GetAccessibleFilesQuery(_currentApiKey, allFilesQuery);
+            Files = await accessibleFiles.ToListAsync();
             return Page();
         }
 
@@ -64,7 +109,8 @@ public class IndexModel : PageModel
                 StoredFileName = storedFileName,
                 FileSize = uploadedFile.Length,
                 ContentType = uploadedFile.ContentType ?? "application/octet-stream",
-                UploadedAt = DateTime.UtcNow
+                UploadedAt = DateTime.UtcNow,
+                ApiKeyId = _currentApiKey.Id
             };
 
             await _repository.AddAsync(fileItem);
@@ -83,10 +129,22 @@ public class IndexModel : PageModel
 
     public async Task<IActionResult> OnPostDeleteAsync(int id)
     {
+        _currentApiKey = await GetCurrentApiKeyAsync();
+
+        if (_currentApiKey == null)
+        {
+            return NotFound();
+        }
+
         var file = await _repository.GetByIdAsync(id);
         if (file == null)
         {
             return NotFound();
+        }
+
+        if (!await _permissionService.CanAccessFileAsync(id, _currentApiKey))
+        {
+            return Forbid();
         }
 
         // Delete physical file
@@ -109,10 +167,21 @@ public class IndexModel : PageModel
 
     public async Task<IActionResult> OnPostBatchDeleteAsync([FromForm] int[] ids)
     {
+        _currentApiKey = await GetCurrentApiKeyAsync();
+
+        if (_currentApiKey == null)
+        {
+            ModelState.AddModelError(string.Empty, "无效的API密钥");
+            Files = new List<FileItem>();
+            return Page();
+        }
+
         if (ids == null || ids.Length == 0)
         {
             ModelState.AddModelError(string.Empty, "请选择至少一个文件");
-            Files = await _repository.GetAllAsync();
+            var allFilesQuery = _repository.GetQueryable().OrderByDescending(f => f.UploadedAt);
+            var accessibleFiles = _permissionService.GetAccessibleFilesQuery(_currentApiKey, allFilesQuery);
+            Files = await accessibleFiles.ToListAsync();
             return Page();
         }
 
@@ -122,7 +191,7 @@ public class IndexModel : PageModel
         foreach (var id in ids)
         {
             var file = await _repository.GetByIdAsync(id);
-            if (file != null)
+            if (file != null && await _permissionService.CanAccessFileAsync(id, _currentApiKey))
             {
                 // Delete physical file
                 var filePath = Path.Combine(uploadsPath, file.StoredFileName);

@@ -18,8 +18,9 @@ public class ApiKeyAuthMiddleware
 
     public async Task InvokeAsync(HttpContext context, AppDbContext dbContext)
     {
-        // 跳过admin接口的鉴权 - admin接口自己做localhost限制
-        if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase))
+        // 跳过admin和public接口的鉴权 - admin接口自己做localhost限制
+        if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase) ||
+            context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);
             return;
@@ -51,6 +52,9 @@ public class ApiKeyAuthMiddleware
             await context.Response.WriteAsync("Unauthorized: invalid or expired key");
             return;
         }
+
+        // 将当前API密钥存入HttpContext.Items供后续使用
+        context.Items["CurrentApiKey"] = apiKey;
 
         // 鉴权通过，继续处理
         await _next(context);
