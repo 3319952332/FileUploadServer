@@ -26,4 +26,14 @@ public class AppDbContext : DbContext
     /// IP白名单表
     /// </summary>
     public DbSet<IpWhitelist> IpWhitelists { get; set; }
+
+    /// <summary>
+    /// WebSocket客户端表
+    /// </summary>
+    public DbSet<WsClient> WsClients { get; set; }
+
+    /// <summary>
+    /// 文件位置记录表
+    /// </summary>
+    public DbSet<FileLocation> FileLocations { get; set; }
 }

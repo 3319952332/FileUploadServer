@@ -103,5 +103,25 @@ public class BackgroundCleanupService : BackgroundService
 
         await dbContext.SaveChangesAsync(stoppingToken);
         _logger.LogInformation("过期密钥清理完成");
+
+        // 清理过期的 WS 客户端文件位置记录
+        try
+        {
+            var expiredLocations = await dbContext.Set<FileUploadServer.Core.Entities.FileLocation>()
+                .Where(fl => fl.ExpiresAt != null && fl.ExpiresAt < DateTime.UtcNow)
+                .ToListAsync(stoppingToken);
+
+            if (expiredLocations.Count > 0)
+            {
+                _logger.LogInformation("找到 {Count} 个过期的 WS 客户端文件位置记录", expiredLocations.Count);
+                dbContext.Set<FileUploadServer.Core.Entities.FileLocation>().RemoveRange(expiredLocations);
+                await dbContext.SaveChangesAsync(stoppingToken);
+                _logger.LogInformation("过期 WS 客户端文件位置记录清理完成");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "清理过期WS客户端文件位置记录时发生错误");
+        }
     }
 }

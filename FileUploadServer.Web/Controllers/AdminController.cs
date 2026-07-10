@@ -119,6 +119,83 @@ public class AdminController : ControllerBase
     }
 
     /// <summary>
+    /// 设置文件公共访问标记（仅localhost）
+    /// </summary>
+    [HttpPut("/api/admin/files/{id}/public")]
+    public async Task<IActionResult> SetFilePublic(int id, [FromBody] SetPublicRequest request)
+    {
+        if (!IsLocalRequest())
+        {
+            return Forbid();
+        }
+
+        var file = await _dbContext.Files.FindAsync(id);
+        if (file == null)
+        {
+            return NotFound();
+        }
+
+        file.IsPublic = request.IsPublic;
+        file.PublicPath = request.IsPublic ? request.PublicPath : null;
+
+        await _dbContext.SaveChangesAsync();
+        return Ok(file);
+    }
+
+    /// <summary>
+    /// 查询所有公共文件（仅localhost，分页）
+    /// </summary>
+    [HttpGet("/api/admin/files/public")]
+    public async Task<ActionResult<List<FileItem>>> GetPublicFiles(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        if (!IsLocalRequest())
+        {
+            return Forbid();
+        }
+
+        var files = await _dbContext.Files
+            .Where(f => f.IsPublic)
+            .OrderByDescending(f => f.UploadedAt)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+
+        return Ok(files);
+    }
+
+    /// <summary>
+    /// 公共文件访问统计（仅localhost）
+    /// </summary>
+    [HttpGet("/api/admin/stats/public-access")]
+    public async Task<ActionResult<object>> GetPublicAccessStats()
+    {
+        if (!IsLocalRequest())
+        {
+            return Forbid();
+        }
+
+        var publicFiles = await _dbContext.Files
+            .Where(f => f.IsPublic)
+            .ToListAsync();
+
+        return Ok(new
+        {
+            totalCount = publicFiles.Count,
+            totalSize = publicFiles.Sum(f => f.FileSize),
+            files = publicFiles.Select(f => new
+            {
+                f.Id,
+                f.FileName,
+                f.PublicPath,
+                f.FileSize,
+                f.UploadedAt
+            })
+        });
+    }
+
+    /// <summary>
     /// 检查是否是localhost请求
     /// </summary>
     private bool IsLocalRequest()
@@ -265,4 +342,13 @@ public class PublicKeysController : ControllerBase
 
         return Created($"api/public/keys/{key.Id}", key);
     }
+}
+
+/// <summary>
+/// 设置公共访问请求体
+/// </summary>
+public class SetPublicRequest
+{
+    public bool IsPublic { get; set; }
+    public string? PublicPath { get; set; }
 }

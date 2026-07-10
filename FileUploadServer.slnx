@@ -1,8 +1,9 @@
 <Solution>
   <Folder Name="/FileUploadServer/">
-    <Project Path="FileUploadServer/FileUploadServer.Core/FileUploadServer.Core.csproj" />
-    <Project Path="FileUploadServer/FileUploadServer.Infrastructure/FileUploadServer.Infrastructure.csproj" />
-    <Project Path="FileUploadServer/FileUploadServer.Tests/FileUploadServer.Tests.csproj" />
-    <Project Path="FileUploadServer/FileUploadServer.Web/FileUploadServer.Web.csproj" />
+    <Project Path="FileUploadServer.Core/FileUploadServer.Core.csproj" />
+    <Project Path="FileUploadServer.Infrastructure/FileUploadServer.Infrastructure.csproj" />
+    <Project Path="FileUploadServer.Tests/FileUploadServer.Tests.csproj" />
+    <Project Path="FileUploadServer.Web/FileUploadServer.Web.csproj" />
   </Folder>
+  <Project Path="FileUploadServer.WsClient/FileUploadServer.WsClient.csproj" />
 </Solution>

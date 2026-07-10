@@ -54,4 +54,50 @@ public class FileItemRepository : IFileItemRepository
     {
         return _context.Files.AsQueryable();
     }
+
+    /// <inheritdoc />
+    public async Task<FileItem?> GetByPublicPathAsync(string publicPath)
+    {
+        return await _context.Files
+            .Where(f => f.IsPublic && f.PublicPath == publicPath)
+            .FirstOrDefaultAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<List<FileItem>> GetPublicFilesAsync(int page, int pageSize)
+    {
+        return await _context.Files
+            .Where(f => f.IsPublic)
+            .OrderByDescending(f => f.UploadedAt)
+            .Skip(page * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<int> GetPublicFilesCountAsync()
+    {
+        return await _context.Files
+            .Where(f => f.IsPublic)
+            .CountAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<FileItem?> GetByDiskFileNameAsync(string diskFileName)
+    {
+        return await _context.Files
+            .Where(f => f.DiskFileName == diskFileName)
+            .FirstOrDefaultAsync();
+    }
+
+    /// <inheritdoc />
+    public async Task<List<FileItem>> GetFilesByKeyVersionAsync(ushort keyVersion, int page, int pageSize)
+    {
+        return await _context.Files
+            .Where(f => f.KeyVersion == keyVersion)
+            .OrderByDescending(f => f.UploadedAt)
+            .Skip(page * pageSize)
+            .Take(pageSize)
+            .ToListAsync();
+    }
 }

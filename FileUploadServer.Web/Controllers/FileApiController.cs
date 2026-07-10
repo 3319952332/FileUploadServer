@@ -1,6 +1,8 @@
+using System.Security.Cryptography;
 using FileUploadServer.Core.Entities;
 using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Infrastructure.Data;
+using FileUploadServer.Infrastructure.Encryption;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,17 +16,23 @@ public class FileApiController : ControllerBase
     private readonly IWebHostEnvironment _env;
     private readonly IPermissionService _permissionService;
     private readonly AppDbContext _dbContext;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<FileApiController> _logger;
 
     public FileApiController(
         IFileItemRepository repository,
         IWebHostEnvironment env,
         IPermissionService permissionService,
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        IServiceScopeFactory scopeFactory,
+        ILogger<FileApiController> logger)
     {
         _repository = repository;
         _env = env;
         _permissionService = permissionService;
         _dbContext = dbContext;
+        _scopeFactory = scopeFactory;
+        _logger = logger;
     }
 
     /// <summary>
@@ -85,7 +93,7 @@ public class FileApiController : ControllerBase
     }
 
     /// <summary>
-    /// 上传文件（自动关联当前密钥）
+    /// 上传文件（自动关联当前密钥，支持透明加密）
     /// </summary>
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status201Created)]
@@ -102,30 +110,85 @@ public class FileApiController : ControllerBase
             return BadRequest("文件不能为空");
         }
 
-        // 生成唯一存储文件名
-        var storedFileName = Guid.NewGuid().ToString() + Path.GetExtension(file.FileName);
-        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
+        // 尝试获取加密服务
+        IKeyProvider? keyProvider = null;
+        try
+        {
+            keyProvider = _scopeFactory.CreateScope().ServiceProvider.GetService<IKeyProvider>();
+        }
+        catch
+        {
+            // 加密服务不可用，使用明文存储
+        }
 
+        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
         if (!Directory.Exists(uploadsPath))
         {
             Directory.CreateDirectory(uploadsPath);
         }
 
+        var storedFileName = Guid.NewGuid().ToString() + Path.GetExtension(file.FileName);
+        var diskFileName = storedFileName; // 默认与 StoredFileName 相同
+        var encryptionVersion = (ushort)0;
+        var keyVersion = (ushort)0;
+        var blockSize = 1048576;
+
         var filePath = Path.Combine(uploadsPath, storedFileName);
 
-        using (var stream = new FileStream(filePath, FileMode.Create))
+        if (keyProvider != null)
         {
-            await file.CopyToAsync(stream);
+            // 加密已启用：使用加密流写入
+            encryptionVersion = 1;
+            keyVersion = keyProvider.CurrentKeyVersion;
+
+            // 生成随机磁盘文件名（SHA256 哈希前32字符作为hex）
+            var hashInput = $"{Guid.NewGuid()}{keyProvider.GetMasterKey()[..8]:X}";
+            var hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(hashInput));
+            diskFileName = Convert.ToHexString(hash)[..32].ToLowerInvariant();
+
+            // 创建子目录（前2字符）
+            var subDir = Path.Combine(uploadsPath, diskFileName[..2]);
+            if (!Directory.Exists(subDir))
+            {
+                Directory.CreateDirectory(subDir);
+            }
+            filePath = Path.Combine(subDir, diskFileName);
+
+            var masterKey = keyProvider.GetMasterKey(keyVersion);
+            using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var encryptStream = new AesGcmEncryptStream(fileStream, masterKey, keyVersion, blockSize))
+            {
+                await file.CopyToAsync(encryptStream);
+                encryptStream.Flush(); // 同步刷新，确保文件头和数据块写入
+                fileStream.Flush(true); // 强制刷盘
+            }
+
+            var actualSize = new FileInfo(filePath).Length;
+            _logger.LogInformation("文件已加密存储: {DiskFileName} (KeyVer={KeyVer}, BlockSize={BlockSize}, DiskSize={DiskSize})",
+                diskFileName, keyVersion, blockSize, actualSize);
+        }
+        else
+        {
+            // 加密未启用：明文写入
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await file.CopyToAsync(stream);
+            }
         }
 
         var fileItem = new FileItem
         {
             FileName = file.FileName,
             StoredFileName = storedFileName,
+            DiskFileName = diskFileName,
             FileSize = file.Length,
             ContentType = file.ContentType ?? "application/octet-stream",
             UploadedAt = DateTime.UtcNow,
-            ApiKeyId = currentKey.Id
+            ApiKeyId = currentKey.Id,
+            EncryptionVersion = encryptionVersion,
+            KeyVersion = keyVersion,
+            BlockSize = blockSize,
+            StorageMode = "Local"
         };
 
         await _repository.AddAsync(fileItem);
@@ -160,9 +223,18 @@ public class FileApiController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden);
         }
 
-        // 删除物理文件
+        // 删除物理文件（支持加密文件的子目录路径）
         var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
-        var filePath = Path.Combine(uploadsPath, file.StoredFileName);
+        string filePath;
+        if (file.EncryptionVersion > 0 && !string.IsNullOrEmpty(file.DiskFileName))
+        {
+            var subDir = Path.Combine(uploadsPath, file.DiskFileName[..2]);
+            filePath = Path.Combine(subDir, file.DiskFileName);
+        }
+        else
+        {
+            filePath = Path.Combine(uploadsPath, file.StoredFileName);
+        }
         if (System.IO.File.Exists(filePath))
         {
             System.IO.File.Delete(filePath);
@@ -175,7 +247,7 @@ public class FileApiController : ControllerBase
     }
 
     /// <summary>
-    /// 下载文件（按权限检查）
+    /// 下载文件（按权限检查，支持透明解密和流式传输）
     /// </summary>
     [HttpGet("download/{id}")]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -201,14 +273,58 @@ public class FileApiController : ControllerBase
         }
 
         var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
-        var filePath = Path.Combine(uploadsPath, file.StoredFileName);
+
+        // 确定文件路径：加密文件使用 DiskFileName，未加密使用 StoredFileName
+        string filePath;
+        if (file.EncryptionVersion > 0 && !string.IsNullOrEmpty(file.DiskFileName))
+        {
+            // 加密文件：子目录 + DiskFileName
+            var subDir = Path.Combine(uploadsPath, file.DiskFileName[..2]);
+            filePath = Path.Combine(subDir, file.DiskFileName);
+        }
+        else
+        {
+            // 未加密文件：传统路径
+            filePath = Path.Combine(uploadsPath, file.StoredFileName);
+        }
 
         if (!System.IO.File.Exists(filePath))
         {
             return NotFound();
         }
 
-        var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
-        return File(fileBytes, file.ContentType, file.FileName);
+        // 流式返回（不缓冲完整文件到内存）
+        Stream fileStream;
+        if (file.EncryptionVersion > 0)
+        {
+            // 尝试使用解密流
+            try
+            {
+                var keyProvider = _scopeFactory.CreateScope().ServiceProvider.GetService<IKeyProvider>();
+                if (keyProvider != null && keyProvider.SupportsKeyVersion(file.KeyVersion))
+                {
+                    var masterKey = keyProvider.GetMasterKey(file.KeyVersion);
+                    var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    fileStream = new AesGcmDecryptStream(fs, keyProvider);
+                    _logger.LogInformation("流式解密下载: {FileName} (KeyVer={KeyVer})", file.FileName, file.KeyVersion);
+                }
+                else
+                {
+                    // 密钥不可用，尝试明文读取
+                    fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                }
+            }
+            catch
+            {
+                // 解密失败，回退到明文
+                fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            }
+        }
+        else
+        {
+            fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        }
+
+        return File(fileStream, file.ContentType, file.FileName);
     }
 }

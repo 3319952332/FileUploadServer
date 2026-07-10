@@ -18,9 +18,13 @@ public class ApiKeyAuthMiddleware
 
     public async Task InvokeAsync(HttpContext context, AppDbContext dbContext)
     {
-        // 跳过admin和public接口的鉴权 - admin接口自己做localhost限制
+        // 跳过admin、public接口和公共文件路径的鉴权
+        // - admin接口自己做localhost限制
+        // - public接口用于公网申请临时密钥
+        // - /p/ 路径由PublicFileMiddleware处理安全和限流
         if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase) ||
-            context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase))
+            context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase) ||
+            context.Request.Path.StartsWithSegments("/p/", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);
             return;

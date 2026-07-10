@@ -3,10 +3,16 @@ using System.Text.Json.Serialization;
 using Microsoft.OpenApi.Models;
 using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Infrastructure.Data;
+using FileUploadServer.Infrastructure.Encryption;
 using FileUploadServer.Infrastructure.Repositories;
 using FileUploadServer.Infrastructure.Services;
+using FileUploadServer.Web.Commands;
+using FileUploadServer.Web.MessageHandlers;
 using FileUploadServer.Web.Middleware;
 using FileUploadServer.Web.Services;
+using FileUploadServer.Core.Models;
+using FileUploadServer.Core.Services;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 // 设置时区为北京时间
@@ -56,6 +62,61 @@ builder.Services.AddScoped<IIpWhitelistService, IpWhitelistService>();
 // Add background cleanup service
 builder.Services.AddHostedService<BackgroundCleanupService>();
 
+// 注册加密相关服务（始终注册，CLI命令和Web服务都需要）
+builder.Services.AddSingleton<IKeyProvider, KeyProvider>();
+builder.Services.AddSingleton(sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var keyFilePath = config.GetValue<string>("Encryption:KeyFilePath")
+                      ?? KeyProvider.DefaultKeyFilePath;
+    var logger = sp.GetRequiredService<ILogger<KeySlotManager>>();
+    return new KeySlotManager(keyFilePath, logger);
+});
+
+// 密钥轮换后台服务仅在Web服务模式下运行
+var isCliMode = args.Contains("--encrypt-init") || args.Contains("--recover") ||
+                args.Contains("--encrypt-add-slot") || args.Contains("--encrypt-remove-slot") ||
+                args.Contains("--export-plaintext");
+if (!isCliMode)
+{
+    builder.Services.AddHostedService<KeyRotationService>();
+}
+
+// 注册公共路径配置
+builder.Services.Configure<PublicPathOptions>(
+    builder.Configuration.GetSection("PublicPath"));
+builder.Services.AddSingleton<PathMatcher>();
+builder.Services.AddSingleton<IPublicFileRateLimiter, PublicFileRateLimiter>();
+
+// 注册 WS 连接管理（单例，整个应用共享连接池）
+builder.Services.AddSingleton<WsConnectionManager>();
+builder.Services.AddScoped<WsClientAuthService>();
+
+// 注册消息处理器
+builder.Services.AddScoped<IMessageHandler, UploadRequestHandler>();
+builder.Services.AddScoped<IMessageHandler, DownloadRequestHandler>();
+builder.Services.AddScoped<IMessageHandler, DeleteRequestHandler>();
+builder.Services.AddScoped<IMessageHandler, ListRequestHandler>();
+builder.Services.AddScoped<IMessageHandler, PingPongHandler>();
+
+// 注册存储策略
+builder.Services.AddScoped<IStorageStrategyFactory, StorageStrategyFactory>();
+builder.Services.AddScoped<LocalStorageStrategy>();
+builder.Services.AddScoped<WsStorageStrategy>();
+
+// 注册限流
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddFixedWindowLimiter("public-file-ip", opt =>
+    {
+        opt.PermitLimit = 100;
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
+        opt.QueueLimit = 10;
+    });
+    options.RejectionStatusCode = 429;
+});
+
 // Add Swagger/OpenAPI
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -100,8 +161,8 @@ using (var scope = app.Services.CreateScope())
     var services = scope.ServiceProvider;
     var context = services.GetRequiredService<AppDbContext>();
     
-    // Ensure database created and tables created
-    context.Database.EnsureCreated();
+    // 使用 Migration 模式，按迁移历史自动应用迁移
+    context.Database.Migrate();
 }
 
 // Configure the HTTP request pipeline.
@@ -119,6 +180,20 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+// 限流中间件（尽早应用）
+app.UseRateLimiter();
+
+// 公共文件访问中间件（在 API Key 鉴权之前，因为公开访问不需要 key）
+app.UseMiddleware<PublicFileMiddleware>();
+
+// WebSocket 中间件
+app.UseWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(30)
+});
+app.UseMiddleware<WebSocketHandlerMiddleware>();
+
 app.UseStaticFiles();
 
 // API Key 鉴权中间件 - 在路由之前
@@ -135,6 +210,12 @@ var uploadsPath = Path.Combine(app.Environment.WebRootPath, "uploads");
 if (!Directory.Exists(uploadsPath))
 {
     Directory.CreateDirectory(uploadsPath);
+}
+
+// 处理加密CLI命令（执行完毕后退出，不启动Web服务）
+if (await EncryptionCommands.TryHandleAsync(args, app.Services))
+{
+    return;
 }
 
 app.Run();
