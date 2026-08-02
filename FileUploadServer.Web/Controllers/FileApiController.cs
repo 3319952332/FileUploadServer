@@ -245,6 +245,13 @@ public class FileApiController : ControllerBase
 
                 fileItem.StoragePath = uploadPath;
                 _logger.LogInformation("File forwarded to WS client {ClientId}: {Path}", clientId, uploadPath);
+
+                // WS 转发成功后删除本地临时副本（本地仅作中转，正式存储为 WS 节点），避免本地残留累积
+                if (System.IO.File.Exists(filePath))
+                {
+                    System.IO.File.Delete(filePath);
+                    _logger.LogInformation("已删除上传本地临时副本: {FilePath}", filePath);
+                }
             }
             catch (Exception ex)
             {

@@ -185,6 +185,13 @@ public class IndexModel : PageModel
                     await wsStrategy.WriteAsync(uploadPath, ms);
                     fileItem.StoragePath = uploadPath;
                     _logger.LogInformation("Web上传转发到WS: {Path}", uploadPath);
+
+                    // WS 转发成功后删除本地临时副本（本地仅作中转，正式存储为 WS 节点），避免本地残留累积
+                    if (System.IO.File.Exists(localFilePath))
+                    {
+                        System.IO.File.Delete(localFilePath);
+                        _logger.LogInformation("已删除上传本地临时副本: {FilePath}", localFilePath);
+                    }
                 }
                 catch (Exception ex)
                 {
