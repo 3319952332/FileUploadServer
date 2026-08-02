@@ -155,7 +155,7 @@ fileStream = await downloadService.OpenDecryptedStreamAsync(fileItem);
 
 `fileStream.CopyToAsync(context.Response.Body)`，`await using` 确保流（含解密流）被释放。
 
-> 源码：`FileUploadServer.Web/Middleware/PublicFileMiddleware.cs:1-403`
+> 源码：`FileUploadServer.Web/Middleware/PublicFileMiddleware.cs:1-396`
 
 ---
 
