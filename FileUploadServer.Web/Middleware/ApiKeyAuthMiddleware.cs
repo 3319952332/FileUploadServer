@@ -24,7 +24,7 @@ public class ApiKeyAuthMiddleware
         // - /p/ 路径由PublicFileMiddleware处理安全和限流
         if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase) ||
             context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase) ||
-            context.Request.Path.StartsWithSegments("/p/", StringComparison.OrdinalIgnoreCase))
+            context.Request.Path.StartsWithSegments("/p", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);
             return;

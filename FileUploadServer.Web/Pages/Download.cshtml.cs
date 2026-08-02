@@ -1,7 +1,6 @@
 using FileUploadServer.Core.Entities;
 using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Infrastructure.Data;
-using FileUploadServer.Infrastructure.Encryption;
 using FileUploadServer.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -70,63 +69,30 @@ public class DownloadModel : PageModel
         using var diScope = _scopeFactory.CreateScope();
         var services = diScope.ServiceProvider;
 
-        // WebSocket 存储：从远程客户端读取
-        if (file.StorageMode == "WebSocket" && !string.IsNullOrEmpty(file.ClientId))
+        // 统一走共享下载服务（WS 存储 / 本地存储 + 透明解密）
+        var downloadService = services.GetRequiredService<FileDownloadService>();
+        try
         {
-            try
-            {
-                var wsStrategy = services.GetRequiredService<WsStorageStrategy>();
-                var remotePath = file.StoragePath ?? file.FileName;
-                sourceStream = await wsStrategy.ReadAsync(remotePath);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(503, $"Storage node unavailable: {ex.Message}");
-            }
+            sourceStream = await downloadService.OpenDecryptedStreamAsync(file);
         }
-        else
+        catch (FileNotFoundException)
         {
-            var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
-            var filePath = Path.Combine(uploadsPath, file.StoredFileName);
-
-            if (!System.IO.File.Exists(filePath))
-            {
-                return NotFound();
-            }
-
-            sourceStream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+            return NotFound();
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(503, $"Storage node unavailable: {ex.Message}");
         }
 
-        // 解密（如果需要）
-        if (file.EncryptionVersion > 0)
-        {
-            try
-            {
-                var keyProvider = services.GetService<IKeyProvider>();
-                if (keyProvider != null)
-                {
-                    using var decryptStream = new AesGcmDecryptStream(sourceStream, keyProvider);
-                    using var ms = new MemoryStream();
-                    await decryptStream.CopyToAsync(ms);
-                    fileBytes = ms.ToArray();
-                }
-                else
-                {
-                    using var ms = new MemoryStream();
-                    await sourceStream.CopyToAsync(ms);
-                    fileBytes = ms.ToArray();
-                }
-            }
-            finally
-            {
-                sourceStream.Dispose();
-            }
-        }
-        else
+        // 解密流已由共享服务按需包装，读入内存后返回
+        try
         {
             using var ms = new MemoryStream();
             await sourceStream.CopyToAsync(ms);
             fileBytes = ms.ToArray();
+        }
+        finally
+        {
             sourceStream.Dispose();
         }
         if (preview == true)

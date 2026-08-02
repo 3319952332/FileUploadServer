@@ -5,7 +5,6 @@ using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Core.Models;
 using FileUploadServer.Core.Services;
 using FileUploadServer.Infrastructure.Data;
-using FileUploadServer.Infrastructure.Encryption;
 using FileUploadServer.Web.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -50,7 +49,6 @@ public class PublicFileMiddleware
         HttpContext context,
         AppDbContext dbContext,
         IPublicFileRateLimiter rateLimiter,
-        IWebHostEnvironment env,
         IOptions<PublicPathOptions> options)
     {
         var opts = options.Value;
@@ -159,115 +157,28 @@ public class PublicFileMiddleware
             }
 
             // ====================================================================
-            // Step 8.5: WebSocket 存储模式 - 从远程 WS 客户端读取文件
+            // Step 8.5 + Step 9: 统一打开解密流（WS 存储 / 本地存储 + 透明解密）
             // ====================================================================
-            if (fileItem.StorageMode == "WebSocket" && !string.IsNullOrEmpty(fileItem.ClientId))
+            var downloadService = context.RequestServices.GetRequiredService<FileDownloadService>();
+            Stream fileStream;
+            try
             {
-                var strategy = context.RequestServices.GetRequiredService<WsStorageStrategy>();
-                var connectionManager = context.RequestServices.GetRequiredService<WsConnectionManager>();
-
-                var storagePath = fileItem.StoragePath ?? fileItem.PublicPath ?? filePath;
-
-                // 检查 WS 客户端是否在线
-                if (!connectionManager.TryPickClientForPath(storagePath, out _))
-                {
-                    _logger.LogWarning("WS 存储节点不可用: ClientId={ClientId}, Path={Path}",
-                        fileItem.ClientId, filePath);
-                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                    await context.Response.WriteAsync("Storage node temporarily unavailable");
-                    return;
-                }
-
-                Stream? wsStream = null;
-                try
-                {
-                    _logger.LogInformation("从 WS 存储节点读取公共文件: {Path} (ClientId: {ClientId}, StoragePath: {StoragePath})",
-                        filePath, fileItem.ClientId, storagePath);
-
-                    wsStream = await strategy.ReadAsync(storagePath);
-
-                    // 缓冲 WS 流，如需要则解密
-                    Stream finalStream = wsStream;
-                    if (fileItem.EncryptionVersion > 0)
-                    {
-                        try
-                        {
-                            var keyProvider = context.RequestServices.GetService<IKeyProvider>();
-                            if (keyProvider != null)
-                                finalStream = new AesGcmDecryptStream(wsStream, keyProvider);
-                        }
-                        catch { /* 解密不可用时返回原始流 */ }
-                    }
-
-                    using var wsMs = new MemoryStream();
-                    await finalStream.CopyToAsync(wsMs);
-                    var wsData = wsMs.ToArray();
-
-                    // 设置响应头
-                    var wsContentType = string.IsNullOrEmpty(fileItem.ContentType)
-                        ? "application/octet-stream"
-                        : fileItem.ContentType;
-
-                    context.Response.ContentType = wsContentType;
-
-                    var wsContentDisposition = IsPreviewableContentType(wsContentType)
-                        ? $"inline; filename=\"{fileItem.FileName}\""
-                        : $"attachment; filename=\"{fileItem.FileName}\"";
-
-                    context.Response.Headers["Content-Disposition"] = wsContentDisposition;
-                    context.Response.Headers["Cache-Control"] = opts.CacheControl;
-
-                    var wsEtag = GenerateEtag(fileItem.StoredFileName, fileItem.FileSize, fileItem.UploadedAt);
-                    context.Response.Headers["ETag"] = wsEtag;
-                    context.Response.Headers["Last-Modified"] = fileItem.UploadedAt.ToString("R");
-                    context.Response.ContentLength = wsData.Length;
-                    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-
-                    // 检查条件请求（If-None-Match -> 304 Not Modified）
-                    var wsIfNoneMatch = context.Request.Headers["If-None-Match"].FirstOrDefault();
-                    if (!string.IsNullOrEmpty(wsIfNoneMatch) && wsIfNoneMatch == wsEtag)
-                    {
-                        _logger.LogDebug("ETag 匹配，返回 304: {Path} ETag: {Etag}", filePath, wsEtag);
-                        context.Response.StatusCode = StatusCodes.Status304NotModified;
-                        context.Response.ContentLength = null;
-                        context.Response.Headers.Remove("Content-Type");
-                        context.Response.Headers.Remove("Content-Disposition");
-                        return;
-                    }
-
-                    _logger.LogInformation("开始流式返回公共文件 (WS): {Path} (ID: {Id}, Size: {Size})",
-                        filePath, fileItem.Id, wsData.Length);
-
-                    await context.Response.Body.WriteAsync(wsData);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "从 WS 存储节点读取文件失败: {Path} (ClientId: {ClientId})",
-                        filePath, fileItem.ClientId);
-                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                    await context.Response.WriteAsync("Storage node temporarily unavailable");
-                }
-                finally
-                {
-                    if (wsStream != null)
-                        await wsStream.DisposeAsync();
-                }
-
-                return;
+                fileStream = await downloadService.OpenDecryptedStreamAsync(fileItem);
             }
-
-            // ====================================================================
-            // Step 9: 打开文件流（本地磁盘存储模式）
-            // ====================================================================
-            var uploadsPath = Path.Combine(env.WebRootPath, "uploads");
-            var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
-
-            if (!System.IO.File.Exists(physicalPath))
+            catch (FileNotFoundException)
             {
-                _logger.LogError("文件在磁盘上不存在: {PhysicalPath} (FileItem ID: {Id}, StoredFileName: {Stored})",
-                    physicalPath, fileItem.Id, fileItem.StoredFileName);
+                _logger.LogError("文件在存储上不存在: (FileItem ID: {Id}, StoredFileName: {Stored})",
+                    fileItem.Id, fileItem.StoredFileName);
                 context.Response.StatusCode = StatusCodes.Status404NotFound;
                 await context.Response.WriteAsync("File not found");
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "从存储读取文件失败: {Path} (ClientId: {ClientId})",
+                    filePath, fileItem.ClientId);
+                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                await context.Response.WriteAsync("Storage node temporarily unavailable");
                 return;
             }
 
@@ -297,7 +208,7 @@ public class PublicFileMiddleware
             // Last-Modified
             context.Response.Headers["Last-Modified"] = fileItem.UploadedAt.ToString("R");
 
-            // Content-Length
+            // Content-Length（解密后明文大小即 FileSize）
             context.Response.ContentLength = fileItem.FileSize;
 
             // 额外的安全头
@@ -323,27 +234,9 @@ public class PublicFileMiddleware
             _logger.LogInformation("开始流式返回公共文件: {Path} (ID: {Id}, Size: {Size})",
                 filePath, fileItem.Id, fileItem.FileSize);
 
-            await using (var fileStream = new FileStream(
-                             physicalPath,
-                             FileMode.Open,
-                             FileAccess.Read,
-                             FileShare.Read,
-                             bufferSize: 65536, // 64KB 缓冲区
-                             useAsync: true))
+            await using (fileStream)
             {
-                // 当 Phase 1.5 加密功能实现后，在此处应检查 fileItem.EncryptionVersion > 0，
-                // 如果加密已启用，将 fileStream 包装为 AesGcmDecryptStream 进行透明解密：
-                //
-                // if (fileItem.EncryptionVersion > 0)
-                // {
-                //     var keyProvider = context.RequestServices.GetRequiredService<IKeyProvider>();
-                //     var decryptStream = new AesGcmDecryptStream(fileStream, keyProvider, fileItem.KeyVersion, fileItem.BlockSize);
-                //     await decryptStream.CopyToAsync(context.Response.Body);
-                // }
-                // else
-                // {
                 await fileStream.CopyToAsync(context.Response.Body);
-                // }
             }
         }
         finally

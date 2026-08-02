@@ -365,81 +365,28 @@ public class FileApiController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden);
         }
 
-        // WebSocket storage mode: fetch from remote client
-        if (file.StorageMode == "WebSocket" && !string.IsNullOrEmpty(file.ClientId))
+        // 统一走共享下载服务（WS 存储 / 本地存储 + 透明解密）
+        var downloadService = HttpContext.RequestServices.GetRequiredService<FileDownloadService>();
+        Stream stream;
+        try
         {
-            try
-            {
-                var wsStrategy = HttpContext.RequestServices.GetRequiredService<WsStorageStrategy>();
-                var remotePath = file.StoragePath ?? file.FileName;
-                var stream = await wsStrategy.ReadAsync(remotePath);
-                return File(stream, file.ContentType, file.FileName);
-            }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("No available WS client"))
-            {
-                _logger.LogWarning("WS client offline for download: ClientId={ClientId}, Path={Path}", file.ClientId, file.StoragePath);
-                return StatusCode(StatusCodes.Status503ServiceUnavailable, "Storage client is currently offline");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "WS download failed: ClientId={ClientId}, Path={Path}", file.ClientId, file.StoragePath);
-                return StatusCode(StatusCodes.Status503ServiceUnavailable, "Failed to retrieve file from storage client");
-            }
+            stream = await downloadService.OpenDecryptedStreamAsync(file);
         }
-
-        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
-
-        // 确定文件路径：加密文件使用 DiskFileName，未加密使用 StoredFileName
-        string filePath;
-        if (file.EncryptionVersion > 0 && !string.IsNullOrEmpty(file.DiskFileName))
+        catch (InvalidOperationException ex) when (ex.Message.Contains("No available WS client"))
         {
-            // 加密文件：子目录 + DiskFileName
-            var subDir = Path.Combine(uploadsPath, file.DiskFileName[..2]);
-            filePath = Path.Combine(subDir, file.DiskFileName);
+            _logger.LogWarning("WS client offline for download: ClientId={ClientId}, Path={Path}", file.ClientId, file.StoragePath);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, "Storage client is currently offline");
         }
-        else
-        {
-            // 未加密文件：传统路径
-            filePath = Path.Combine(uploadsPath, file.StoredFileName);
-        }
-
-        if (!System.IO.File.Exists(filePath))
+        catch (FileNotFoundException)
         {
             return NotFound();
         }
-
-        // 流式返回（不缓冲完整文件到内存）
-        Stream fileStream;
-        if (file.EncryptionVersion > 0)
+        catch (Exception ex)
         {
-            // 尝试使用解密流
-            try
-            {
-                var keyProvider = _scopeFactory.CreateScope().ServiceProvider.GetService<IKeyProvider>();
-                if (keyProvider != null && keyProvider.SupportsKeyVersion(file.KeyVersion))
-                {
-                    var masterKey = keyProvider.GetMasterKey(file.KeyVersion);
-                    var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                    fileStream = new AesGcmDecryptStream(fs, keyProvider);
-                    _logger.LogInformation("流式解密下载: {FileName} (KeyVer={KeyVer})", file.FileName, file.KeyVersion);
-                }
-                else
-                {
-                    // 密钥不可用，尝试明文读取
-                    fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                }
-            }
-            catch
-            {
-                // 解密失败，回退到明文
-                fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            }
-        }
-        else
-        {
-            fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            _logger.LogError(ex, "Download failed: Id={Id}, ClientId={ClientId}", id, file.ClientId);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, "Failed to retrieve file from storage client");
         }
 
-        return File(fileStream, file.ContentType, file.FileName);
+        return File(stream, file.ContentType, file.FileName);
     }
 }

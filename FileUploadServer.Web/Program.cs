@@ -105,6 +105,9 @@ builder.Services.AddScoped<IStorageStrategyFactory, StorageStrategyFactory>();
 builder.Services.AddScoped<LocalStorageStrategy>();
 builder.Services.AddScoped<WsStorageStrategy>();
 
+// 共享下载服务（统一 WS/本地读取 + 透明解密，供网页/API/公共访问共用）
+builder.Services.AddScoped<FileDownloadService>();
+
 // 注册限流
 builder.Services.AddRateLimiter(options =>
 {
@@ -186,16 +189,9 @@ app.UseHttpsRedirection();
 app.UseRateLimiter();
 
 // 公共文件访问中间件（在 API Key 鉴权之前，因为公开访问不需要 key）
-// =====================================================================
-// ⛔ 2026-08-02 屏蔽公共文件访问（/p/ 路径），问题待整改：
-//   1. WS 存储的加密文件经 /p/ 访问时，服务端解密失败
-//      （AesGcmDecryptStream tag mismatch，老密文与当前密钥不匹配 → 503）
-//   2. PublicFileMiddleware 直接连接 WS 节点读取文件，违背
-//      "所有文件访问统一走 API（FileApiController）" 的分层架构
-//   整改方向：公开访问统一走 FileApiController.Download 的封装，
-//   或公开文件限定本地磁盘存储；修复后再启用本中间件。
-// =====================================================================
-// app.UseMiddleware<PublicFileMiddleware>();
+// 2026-08-02 曾因"WS 加密文件解密失败 + 中间件直连 WS 节点违背分层架构"而屏蔽；
+// 已通过 FileDownloadService 统一"读取 + 解密"逻辑修复，重新启用。
+app.UseMiddleware<PublicFileMiddleware>();
 
 // WebSocket 中间件
 app.UseWebSockets(new WebSocketOptions
