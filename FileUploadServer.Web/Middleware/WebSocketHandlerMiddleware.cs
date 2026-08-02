@@ -29,6 +29,14 @@ public class WebSocketHandlerMiddleware
     /// <summary>待处理上传映射表（requestId → PendingUpload）。</summary>
     private static readonly ConcurrentDictionary<string, PendingUpload> PendingUploads = new();
 
+    /// <summary>WS 策略响应等待映射表（requestId → TaskCompletionSource）。</summary>
+    /// 用于 WsStorageStrategy 等待 WS 客户端的响应消息，避免与中间件 ReceiveLoop 竞争读取。
+    public static readonly ConcurrentDictionary<string, TaskCompletionSource<JsonDocument>> PendingResponses = new();
+
+    /// <summary>待处理下载流映射表（requestId → MemoryStream）。</summary>
+    /// 用于 WsStorageStrategy.ReadAsync 接收二进制帧数据，避免与中间件 ReceiveLoop 竞争。
+    public static readonly ConcurrentDictionary<string, MemoryStream> PendingDownloadStreams = new();
+
     public WebSocketHandlerMiddleware(RequestDelegate next, ILogger<WebSocketHandlerMiddleware> logger)
     {
         _next = next;
@@ -299,6 +307,13 @@ public class WebSocketHandlerMiddleware
             connectionManager.UpdateHeartbeat(clientId);
         }
 
+        // WS策略响应消息：完成等待中的 TaskCompletionSource
+        if (requestId != null && PendingResponses.TryRemove(requestId, out var tcs))
+        {
+            tcs.TrySetResult(doc);
+            return;
+        }
+
         // 获取连接对象传递给 handler
         var wsConnection = connectionManager.GetConnection(clientId);
         if (wsConnection == null)
@@ -369,13 +384,18 @@ public class WebSocketHandlerMiddleware
 
         var requestIdStr = requestId.ToString();
 
-        if (PendingUploads.TryGetValue(requestIdStr, out var pending))
+        // 优先检查 PendingDownloadStreams（WS 下载响应）
+        if (PendingDownloadStreams.TryGetValue(requestIdStr, out var downloadStream))
+        {
+            await downloadStream.WriteAsync(payload);
+        }
+        else if (PendingUploads.TryGetValue(requestIdStr, out var pending))
         {
             await pending.WriteChunkAsync(chunkIndex, payload, totalChunks);
         }
         else
         {
-            _logger.LogWarning("Binary frame for unknown pending upload {RequestId} from client {ClientId}",
+            _logger.LogWarning("Binary frame for unknown request {RequestId} from client {ClientId}",
                 requestIdStr, clientId);
         }
     }

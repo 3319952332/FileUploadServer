@@ -3,6 +3,7 @@ using FileUploadServer.Core.Entities;
 using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Infrastructure.Data;
 using FileUploadServer.Infrastructure.Encryption;
+using FileUploadServer.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -17,6 +18,7 @@ public class FileApiController : ControllerBase
     private readonly IPermissionService _permissionService;
     private readonly AppDbContext _dbContext;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IStorageStrategyFactory _storageStrategyFactory;
     private readonly ILogger<FileApiController> _logger;
 
     public FileApiController(
@@ -25,6 +27,7 @@ public class FileApiController : ControllerBase
         IPermissionService permissionService,
         AppDbContext dbContext,
         IServiceScopeFactory scopeFactory,
+        IStorageStrategyFactory storageStrategyFactory,
         ILogger<FileApiController> logger)
     {
         _repository = repository;
@@ -32,6 +35,7 @@ public class FileApiController : ControllerBase
         _permissionService = permissionService;
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
+        _storageStrategyFactory = storageStrategyFactory;
         _logger = logger;
     }
 
@@ -97,7 +101,7 @@ public class FileApiController : ControllerBase
     /// </summary>
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status201Created)]
-    public async Task<ActionResult<FileItem>> Upload(IFormFile file)
+    public async Task<ActionResult<FileItem>> Upload(IFormFile file, [FromForm] string? path = null)
     {
         var currentKey = GetCurrentApiKey();
         if (currentKey == null)
@@ -108,6 +112,23 @@ public class FileApiController : ControllerBase
         if (file == null || file.Length == 0)
         {
             return BadRequest("文件不能为空");
+        }
+
+        // 根据路径确定存储模式和客户端（确保路径以 / 开头）
+        var uploadPath = string.IsNullOrEmpty(path) ? "/" + file.FileName : path;
+        if (!uploadPath.StartsWith('/'))
+            uploadPath = "/" + uploadPath;
+        var strategy = _storageStrategyFactory.GetStrategy(uploadPath);
+        var isWsStorage = strategy is WsStorageStrategy;
+        string? clientId = null;
+
+        if (isWsStorage)
+        {
+            var connectionManager = HttpContext.RequestServices.GetRequiredService<WsConnectionManager>();
+            if (connectionManager.TryPickClientForPath(uploadPath, out var wsClient))
+            {
+                clientId = wsClient.ClientId;
+            }
         }
 
         // 尝试获取加密服务
@@ -188,8 +209,47 @@ public class FileApiController : ControllerBase
             EncryptionVersion = encryptionVersion,
             KeyVersion = keyVersion,
             BlockSize = blockSize,
-            StorageMode = "Local"
+            StorageMode = (isWsStorage && clientId != null) ? "WebSocket" : "Local",
+            ClientId = clientId,
         };
+
+        // Forward file to WebSocket storage client
+        if (isWsStorage && clientId != null)
+        {
+            try
+            {
+                using var readStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var memoryStream = new MemoryStream();
+                await readStream.CopyToAsync(memoryStream);
+                memoryStream.Position = 0;
+
+                var wsStrategy = HttpContext.RequestServices.GetRequiredService<WsStorageStrategy>();
+                await wsStrategy.WriteAsync(uploadPath, memoryStream);
+
+                // Create FileLocation record for WS storage
+                var fileLocation = new FileLocation
+                {
+                    Id = Guid.NewGuid(),
+                    FilePath = uploadPath,
+                    FileName = file.FileName,
+                    FileSize = file.Length,
+                    ClientId = clientId,
+                    ApiKeyId = currentKey.Id,
+                    IsPublic = false,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _dbContext.Set<FileLocation>().Add(fileLocation);
+
+                fileItem.StoragePath = uploadPath;
+                _logger.LogInformation("File forwarded to WS client {ClientId}: {Path}", clientId, uploadPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "WS write failed for {Path}, file saved locally only", uploadPath);
+                fileItem.StorageMode = "Local";
+                fileItem.ClientId = null;
+            }
+        }
 
         await _repository.AddAsync(fileItem);
         await _repository.SaveChangesAsync();
@@ -221,6 +281,39 @@ public class FileApiController : ControllerBase
         if (!await _permissionService.CanAccessFileAsync(id, currentKey))
         {
             return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        // WebSocket storage mode: delete from remote client
+        if (file.StorageMode == "WebSocket" && !string.IsNullOrEmpty(file.ClientId))
+        {
+            try
+            {
+                var wsStrategy = HttpContext.RequestServices.GetRequiredService<WsStorageStrategy>();
+                var remotePath = file.StoragePath ?? file.FileName;
+                await wsStrategy.DeleteAsync(remotePath);
+                _logger.LogInformation("File deleted from WS client {ClientId}: {Path}", file.ClientId, remotePath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "WS delete failed for ClientId={ClientId}, Path={Path}, deleting local record anyway", file.ClientId, file.StoragePath);
+            }
+
+            // Delete FileLocation record
+            try
+            {
+                var fileLocations = await _dbContext.Set<FileLocation>()
+                    .Where(fl => fl.FilePath == (file.StoragePath ?? file.FileName) && fl.ClientId == file.ClientId)
+                    .ToListAsync();
+                if (fileLocations.Count > 0)
+                {
+                    _dbContext.Set<FileLocation>().RemoveRange(fileLocations);
+                    await _dbContext.SaveChangesAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete FileLocation record for Path={Path}", file.StoragePath);
+            }
         }
 
         // 删除物理文件（支持加密文件的子目录路径）
@@ -270,6 +363,28 @@ public class FileApiController : ControllerBase
         if (!await _permissionService.CanAccessFileAsync(id, currentKey))
         {
             return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        // WebSocket storage mode: fetch from remote client
+        if (file.StorageMode == "WebSocket" && !string.IsNullOrEmpty(file.ClientId))
+        {
+            try
+            {
+                var wsStrategy = HttpContext.RequestServices.GetRequiredService<WsStorageStrategy>();
+                var remotePath = file.StoragePath ?? file.FileName;
+                var stream = await wsStrategy.ReadAsync(remotePath);
+                return File(stream, file.ContentType, file.FileName);
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("No available WS client"))
+            {
+                _logger.LogWarning("WS client offline for download: ClientId={ClientId}, Path={Path}", file.ClientId, file.StoragePath);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, "Storage client is currently offline");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "WS download failed: ClientId={ClientId}, Path={Path}", file.ClientId, file.StoragePath);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, "Failed to retrieve file from storage client");
+            }
         }
 
         var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");

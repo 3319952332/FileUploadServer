@@ -1,9 +1,11 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
+using FileUploadServer.Core.Interfaces;
 using FileUploadServer.Core.Models;
 using FileUploadServer.Core.Services;
 using FileUploadServer.Infrastructure.Data;
+using FileUploadServer.Infrastructure.Encryption;
 using FileUploadServer.Web.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -14,6 +16,12 @@ namespace FileUploadServer.Web.Middleware;
 /// 公共文件访问中间件
 /// <para>处理 /p/{*filePath} 路径的匿名文件访问请求，实现完整的 12 步处理流程。</para>
 /// </summary>
+/// <remarks>
+/// ⛔ 2026-08-02 已由 Program.cs 屏蔽（未注册），问题待整改：
+/// 1. Step 8.5 WS 存储分支对加密文件服务端解密失败（老密文 tag mismatch → 503）；
+/// 2. 中间件直接连 WS 节点违背"访问统一走 API"的分层架构。
+/// 整改方向：公开访问统一走 FileApiController.Download 封装，或公开文件限定本地磁盘。
+/// </remarks>
 public class PublicFileMiddleware
 {
     private readonly RequestDelegate _next;
@@ -151,7 +159,105 @@ public class PublicFileMiddleware
             }
 
             // ====================================================================
-            // Step 9: 打开文件流
+            // Step 8.5: WebSocket 存储模式 - 从远程 WS 客户端读取文件
+            // ====================================================================
+            if (fileItem.StorageMode == "WebSocket" && !string.IsNullOrEmpty(fileItem.ClientId))
+            {
+                var strategy = context.RequestServices.GetRequiredService<WsStorageStrategy>();
+                var connectionManager = context.RequestServices.GetRequiredService<WsConnectionManager>();
+
+                var storagePath = fileItem.StoragePath ?? fileItem.PublicPath ?? filePath;
+
+                // 检查 WS 客户端是否在线
+                if (!connectionManager.TryPickClientForPath(storagePath, out _))
+                {
+                    _logger.LogWarning("WS 存储节点不可用: ClientId={ClientId}, Path={Path}",
+                        fileItem.ClientId, filePath);
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    await context.Response.WriteAsync("Storage node temporarily unavailable");
+                    return;
+                }
+
+                Stream? wsStream = null;
+                try
+                {
+                    _logger.LogInformation("从 WS 存储节点读取公共文件: {Path} (ClientId: {ClientId}, StoragePath: {StoragePath})",
+                        filePath, fileItem.ClientId, storagePath);
+
+                    wsStream = await strategy.ReadAsync(storagePath);
+
+                    // 缓冲 WS 流，如需要则解密
+                    Stream finalStream = wsStream;
+                    if (fileItem.EncryptionVersion > 0)
+                    {
+                        try
+                        {
+                            var keyProvider = context.RequestServices.GetService<IKeyProvider>();
+                            if (keyProvider != null)
+                                finalStream = new AesGcmDecryptStream(wsStream, keyProvider);
+                        }
+                        catch { /* 解密不可用时返回原始流 */ }
+                    }
+
+                    using var wsMs = new MemoryStream();
+                    await finalStream.CopyToAsync(wsMs);
+                    var wsData = wsMs.ToArray();
+
+                    // 设置响应头
+                    var wsContentType = string.IsNullOrEmpty(fileItem.ContentType)
+                        ? "application/octet-stream"
+                        : fileItem.ContentType;
+
+                    context.Response.ContentType = wsContentType;
+
+                    var wsContentDisposition = IsPreviewableContentType(wsContentType)
+                        ? $"inline; filename=\"{fileItem.FileName}\""
+                        : $"attachment; filename=\"{fileItem.FileName}\"";
+
+                    context.Response.Headers["Content-Disposition"] = wsContentDisposition;
+                    context.Response.Headers["Cache-Control"] = opts.CacheControl;
+
+                    var wsEtag = GenerateEtag(fileItem.StoredFileName, fileItem.FileSize, fileItem.UploadedAt);
+                    context.Response.Headers["ETag"] = wsEtag;
+                    context.Response.Headers["Last-Modified"] = fileItem.UploadedAt.ToString("R");
+                    context.Response.ContentLength = wsData.Length;
+                    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+                    // 检查条件请求（If-None-Match -> 304 Not Modified）
+                    var wsIfNoneMatch = context.Request.Headers["If-None-Match"].FirstOrDefault();
+                    if (!string.IsNullOrEmpty(wsIfNoneMatch) && wsIfNoneMatch == wsEtag)
+                    {
+                        _logger.LogDebug("ETag 匹配，返回 304: {Path} ETag: {Etag}", filePath, wsEtag);
+                        context.Response.StatusCode = StatusCodes.Status304NotModified;
+                        context.Response.ContentLength = null;
+                        context.Response.Headers.Remove("Content-Type");
+                        context.Response.Headers.Remove("Content-Disposition");
+                        return;
+                    }
+
+                    _logger.LogInformation("开始流式返回公共文件 (WS): {Path} (ID: {Id}, Size: {Size})",
+                        filePath, fileItem.Id, wsData.Length);
+
+                    await context.Response.Body.WriteAsync(wsData);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "从 WS 存储节点读取文件失败: {Path} (ClientId: {ClientId})",
+                        filePath, fileItem.ClientId);
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    await context.Response.WriteAsync("Storage node temporarily unavailable");
+                }
+                finally
+                {
+                    if (wsStream != null)
+                        await wsStream.DisposeAsync();
+                }
+
+                return;
+            }
+
+            // ====================================================================
+            // Step 9: 打开文件流（本地磁盘存储模式）
             // ====================================================================
             var uploadsPath = Path.Combine(env.WebRootPath, "uploads");
             var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);

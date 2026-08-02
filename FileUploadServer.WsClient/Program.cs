@@ -71,7 +71,7 @@ rootCommand.SetHandler(async (context) =>
     IFileStorageClient client = mode switch
     {
         "local" => new LocalFileStorageClient(storagePath!),
-        "ws" => CreateWsClient(server!, clientId!, clientSecret!, paths!),
+        "ws" => CreateWsClient(server!, clientId!, clientSecret!, paths!, storagePath!),
         _ => throw new ArgumentException($"Unknown mode: {mode}"),
     };
 
@@ -141,9 +141,9 @@ rootCommand.SetHandler(async (context) =>
     }
 });
 
-static WsFileStorageClient CreateWsClient(string serverUrl, string clientId, string clientSecret, string[] paths)
+static WsFileStorageClient CreateWsClient(string serverUrl, string clientId, string clientSecret, string[] paths, string? storagePath = null)
 {
-    var client = new WsFileStorageClient(serverUrl, clientId, clientSecret);
+    var client = new WsFileStorageClient(serverUrl, clientId, clientSecret, storagePath ?? string.Empty);
     if (paths.Length > 0)
     {
         client.SupportedPaths = paths;

@@ -6,4 +6,5 @@
     <Project Path="FileUploadServer.Web/FileUploadServer.Web.csproj" />
   </Folder>
   <Project Path="FileUploadServer.WsClient/FileUploadServer.WsClient.csproj" />
+  <Project Path="FileUploadServer.Mcp/FileUploadServer.Mcp.csproj" />
 </Solution>

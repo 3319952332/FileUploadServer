@@ -28,7 +28,6 @@ public enum RouteStrategy
 /// </summary>
 public class ClientRouter
 {
-    private readonly WsConnectionManager _connectionManager;
     private readonly ILogger<ClientRouter> _logger;
 
     /// <summary>轮询计数器（按策略实例）。</summary>
@@ -43,11 +42,8 @@ public class ClientRouter
     /// <summary>当前路由策略。</summary>
     public RouteStrategy Strategy { get; set; } = RouteStrategy.PathPrefix;
 
-    public ClientRouter(
-        WsConnectionManager connectionManager,
-        ILogger<ClientRouter> logger)
+    public ClientRouter(ILogger<ClientRouter> logger)
     {
-        _connectionManager = connectionManager;
         _logger = logger;
     }
 
@@ -56,10 +52,14 @@ public class ClientRouter
     /// 1. 路径前缀匹配 → 过滤不可用 → 按策略选择
     /// 2. 支持故障转移
     /// </summary>
-    public WsClientConnection? SelectClient(string filePath)
+    public WsClientConnection? SelectClient(string filePath, IEnumerable<WsClientConnection> allConnections)
     {
-        // 1. 获取所有匹配路径的在线客户端
-        var candidates = _connectionManager.GetConnectionsForPath(filePath);
+        // 1. 过滤：只保留路径前缀匹配且 WebSocket 状态为 Open 的连接
+        //    路径前缀支持通配符：* 匹配单段，** 匹配多段
+        var candidates = allConnections
+            .Where(c => c.WebSocket.State == WebSocketState.Open &&
+                        c.SupportedPaths.Any(p => IsPathMatch(filePath, p)))
+            .ToList();
 
         if (candidates.Count == 0)
         {
@@ -229,5 +229,23 @@ public class ClientRouter
         }
 
         return Math.Max(0, score);
+    }
+
+    /// <summary>
+    /// 路径模式匹配。支持通配符 *（匹配单段）和 **（匹配多段）。
+    /// </summary>
+    private static bool IsPathMatch(string filePath, string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern))
+            return false;
+
+        if (!pattern.Contains('*'))
+            return filePath.StartsWith(pattern, StringComparison.OrdinalIgnoreCase);
+
+        var regexPattern = "^" + System.Text.RegularExpressions.Regex.Escape(pattern)
+            .Replace("\\*\\*", ".*")
+            .Replace("\\*", "[^/]*") + ".*$";
+        return System.Text.RegularExpressions.Regex.IsMatch(filePath, regexPattern,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 }

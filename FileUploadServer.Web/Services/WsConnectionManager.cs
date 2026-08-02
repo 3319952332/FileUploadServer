@@ -12,15 +12,17 @@ public class WsConnectionManager : IDisposable
     private readonly ConcurrentDictionary<string, WsClientConnection> _connections = new();
     private readonly ConcurrentDictionary<string, HashSet<string>> _pathPrefixIndex = new();
     private readonly ILogger<WsConnectionManager> _logger;
+    private readonly ClientRouter _clientRouter;
     private Timer? _heartbeatTimer;
     private readonly TimeSpan _heartbeatInterval = TimeSpan.FromSeconds(30);
     private readonly TimeSpan _connectionTimeout = TimeSpan.FromSeconds(60);
     private bool _disposed;
     private readonly object _lockObj = new();
 
-    public WsConnectionManager(ILogger<WsConnectionManager> logger)
+    public WsConnectionManager(ILogger<WsConnectionManager> logger, ClientRouter clientRouter)
     {
         _logger = logger;
+        _clientRouter = clientRouter;
     }
 
     /// <summary>
@@ -139,14 +141,11 @@ public class WsConnectionManager : IDisposable
 
     /// <summary>
     /// 尝试为给定文件路径选择一个最合适的客户端。
-    /// 策略：选择路径前缀匹配最长的在线客户端。
+    /// 委托给 ClientRouter 进行多策略路由选择。
     /// </summary>
     public bool TryPickClientForPath(string filePath, out WsClientConnection? client)
     {
-        var candidates = GetConnectionsForPath(filePath);
-        client = candidates
-            .OrderByDescending(c => c.SupportedPaths.Max(p => p.Length))
-            .FirstOrDefault();
+        client = _clientRouter.SelectClient(filePath, _connections.Values);
         return client != null;
     }
 

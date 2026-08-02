@@ -114,7 +114,27 @@ public class BackgroundCleanupService : BackgroundService
             if (expiredLocations.Count > 0)
             {
                 _logger.LogInformation("找到 {Count} 个过期的 WS 客户端文件位置记录", expiredLocations.Count);
-                dbContext.Set<FileUploadServer.Core.Entities.FileLocation>().RemoveRange(expiredLocations);
+
+                var wsStrategy = scope.ServiceProvider.GetRequiredService<WsStorageStrategy>();
+
+                foreach (var location in expiredLocations)
+                {
+                    try
+                    {
+                        await wsStrategy.DeleteAsync(location.FilePath);
+                        _logger.LogInformation("已删除 WS 客户端文件: {FilePath} (客户端: {ClientId})",
+                            location.FilePath, location.ClientId);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "删除 WS 客户端文件失败: {FilePath} (客户端: {ClientId}，可能已离线)",
+                            location.FilePath, location.ClientId);
+                    }
+
+                    // 无论 WS 删除是否成功，都删除数据库记录
+                    dbContext.Set<FileUploadServer.Core.Entities.FileLocation>().Remove(location);
+                }
+
                 await dbContext.SaveChangesAsync(stoppingToken);
                 _logger.LogInformation("过期 WS 客户端文件位置记录清理完成");
             }

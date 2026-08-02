@@ -20,6 +20,7 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
     private readonly string _serverUrl;
     private readonly string _clientId;
     private readonly string _clientSecret;
+    private readonly string _storagePath;
     private ClientWebSocket? _webSocket;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<ResponseMessage>> _pendingRequests = new();
     private readonly ConcurrentDictionary<string, DownloadContext> _downloads = new();
@@ -51,11 +52,23 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
     /// <summary>
     /// 创建 WsFileStorageClient 实例
     /// </summary>
-    public WsFileStorageClient(string serverUrl, string clientId, string clientSecret)
+    public WsFileStorageClient(string serverUrl, string clientId, string clientSecret, string storagePath = "")
     {
         _serverUrl = serverUrl.TrimEnd('/');
         _clientId = clientId;
         _clientSecret = clientSecret;
+        _storagePath = storagePath;
+    }
+
+    /// <summary>
+    /// 将远程路径解析为安全的本地存储路径
+    /// </summary>
+    private string GetSafePath(string remotePath)
+    {
+        var normalized = remotePath.Replace('\\', '/').TrimStart('/');
+        if (normalized.Contains(".."))
+            throw new InvalidOperationException($"Path traversal detected: {remotePath}");
+        return Path.Combine(_storagePath, normalized);
     }
 
     /// <summary>
@@ -82,23 +95,11 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
 
             var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var token = ComputeToken(_clientId, _clientSecret, timestamp);
-            var uri = new Uri($"{_serverUrl}/ws/connect?clientId={_clientId}&token={token}&timestamp={timestamp}");
+            var prefixesStr = string.Join(",", SupportedPaths);
+            var uri = new Uri($"{_serverUrl}/ws/connect?clientId={_clientId}&token={token}&timestamp={timestamp}&prefixes={Uri.EscapeDataString(prefixesStr)}");
 
             using var connectCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await _webSocket.ConnectAsync(uri, connectCts.Token);
-
-            // 发送注册信息
-            var registerMsg = new
-            {
-                type = "register",
-                supportedPaths = SupportedPaths,
-                storageCapacity = GetStorageCapacity(),
-            };
-            var registerJson = JsonSerializer.Serialize(registerMsg, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            });
-            await SendTextAsync(registerJson);
 
             _reconnectAttempt = 0;
             StartHeartbeat();
@@ -141,10 +142,17 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
         }
         _pendingRequests.Clear();
 
-        // 取消所有活跃下载
+        // 取消所有活跃下载/上传
         foreach (var kvp in _downloads)
         {
-            kvp.Value.PipeWriter.Complete(new WsClientException("Client disconnected"));
+            if (kvp.Value.FileStream != null)
+            {
+                try { kvp.Value.FileStream.Close(); } catch { }
+            }
+            else
+            {
+                kvp.Value.PipeWriter.Complete(new WsClientException("Client disconnected"));
+            }
         }
         _downloads.Clear();
     }
@@ -224,9 +232,53 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
                     await HandleUploadRequest(doc);
                     break;
 
+                case "upload_complete":
+                    // 服务端通知上传数据已全部发送 — 关闭本地文件流
+                    if (!string.IsNullOrEmpty(requestId) && _downloads.TryRemove(requestId, out var upCtx))
+                    {
+                        try
+                        {
+                            if (upCtx.FileStream != null)
+                            {
+                                await upCtx.FileStream.FlushAsync();
+                                upCtx.FileStream.Close();
+                            }
+                            else
+                            {
+                                upCtx.PipeWriter.Complete();
+                            }
+                            // 发送确认
+                            await SendTextAsync(JsonSerializer.Serialize(new
+                            {
+                                type = "upload_complete",
+                                requestId,
+                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                        }
+                        catch (Exception ex)
+                        {
+                            await SendTextAsync(JsonSerializer.Serialize(new
+                            {
+                                type = "upload_error",
+                                requestId,
+                                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                code = 500,
+                                message = ex.Message,
+                            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                        }
+                    }
+                    break;
+
+                case "download_request":
+                    await HandleDownloadRequest(doc);
+                    break;
+
+                case "delete_request":
+                    await HandleDeleteRequest(doc);
+                    break;
+
                 case "upload_ack":
                 case "download_complete":
-                case "upload_complete":
                 case "delete_complete":
                     // 请求完成响应 - 匹配待处理请求
                     if (!string.IsNullOrEmpty(requestId) &&
@@ -263,7 +315,8 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
     }
 
     /// <summary>
-    /// 处理上传请求（服务端发来的上传指令）
+    /// 处理上传请求（服务端发来的上传指令）。
+    /// 接收二进制文件数据块，写入本地磁盘。
     /// </summary>
     private async Task HandleUploadRequest(JsonDocument doc)
     {
@@ -272,6 +325,12 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
 
         try
         {
+            // 解析文件路径并创建目录
+            var safePath = GetSafePath(path);
+            var dir = Path.GetDirectoryName(safePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
             // 发送 upload_ack 确认接收
             var ackJson = JsonSerializer.Serialize(new
             {
@@ -283,22 +342,14 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
             }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
             await SendTextAsync(ackJson);
 
-            // 接收文件数据并写入磁盘
-            // 此处作为服务端主动推送上传的处理器；实际文件写入由外部策略处理
-            // 这个实现会在收到 upload_data 二进制帧时写入对应的 Pipe
-            // 简化实现：我们使用 Pipe 来暂存数据
-            var pipe = new Pipe();
+            // 打开目标文件写入流
+            var fileStream = new FileStream(safePath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
             var ctx = new DownloadContext
             {
-                PipeWriter = pipe.Writer,
-                TotalChunks = -1,
+                FileStream = fileStream,
                 FilePath = path,
             };
             _downloads[requestId] = ctx;
-
-            // 等待 upload_complete 信号
-            // 注意：实际上传数据在 HandleBinaryMessage 中写入 Pipe
-            // 这里仅创建上下文，数据流由外部调用者处理
         }
         catch (Exception ex)
         {
@@ -306,6 +357,112 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
             var errorJson = JsonSerializer.Serialize(new
             {
                 type = "upload_error",
+                requestId,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                code = 500,
+                message = ex.Message,
+            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            await SendTextAsync(errorJson);
+        }
+    }
+
+    /// <summary>
+    /// 处理删除请求（服务端发来的删除指令）。
+    /// 删除本地磁盘上的文件。
+    /// </summary>
+    private async Task HandleDeleteRequest(JsonDocument doc)
+    {
+        var requestId = doc.RootElement.GetProperty("requestId").GetString() ?? string.Empty;
+        var path = doc.RootElement.GetProperty("path").GetString() ?? string.Empty;
+
+        try
+        {
+            var safePath = GetSafePath(path);
+            if (File.Exists(safePath))
+            {
+                File.Delete(safePath);
+            }
+
+            // 发送 delete_complete
+            var completeJson = JsonSerializer.Serialize(new
+            {
+                type = "delete_complete",
+                requestId,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            await SendTextAsync(completeJson);
+        }
+        catch (Exception ex)
+        {
+            var errorJson = JsonSerializer.Serialize(new
+            {
+                type = "delete_error",
+                requestId,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                code = 500,
+                message = ex.Message,
+            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            await SendTextAsync(errorJson);
+        }
+    }
+
+    /// <summary>
+    /// 处理下载请求（服务端请求下载文件）。
+    /// 读取本地文件，通过二进制帧发送回去。
+    /// </summary>
+    private async Task HandleDownloadRequest(JsonDocument doc)
+    {
+        var requestId = doc.RootElement.GetProperty("requestId").GetString() ?? string.Empty;
+        var path = doc.RootElement.GetProperty("path").GetString() ?? string.Empty;
+
+        try
+        {
+            var safePath = GetSafePath(path);
+            if (!File.Exists(safePath))
+            {
+                var errJson = JsonSerializer.Serialize(new
+                {
+                    type = "download_error",
+                    requestId,
+                    timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    code = 404,
+                    message = $"File not found: {path}",
+                }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+                await SendTextAsync(errJson);
+                return;
+            }
+
+            var fileBytes = await File.ReadAllBytesAsync(safePath);
+            var requestGuid = Guid.Parse(requestId);
+            const int chunkSize = 64 * 1024;
+            var totalChunks = (int)Math.Ceiling((double)fileBytes.Length / chunkSize);
+
+            // 分块发送文件数据
+            for (int i = 0; i < totalChunks; i++)
+            {
+                var offset = i * chunkSize;
+                var size = Math.Min(chunkSize, fileBytes.Length - offset);
+                var chunk = new byte[size];
+                Array.Copy(fileBytes, offset, chunk, 0, size);
+
+                var frame = WsBinaryFrame.BuildFrame(requestGuid, i, totalChunks, chunk, chunk.Length);
+                await _webSocket!.SendAsync(new ArraySegment<byte>(frame), WebSocketMessageType.Binary, true, _disconnectCts.Token);
+            }
+
+            // 发送完成通知
+            var completeJson = JsonSerializer.Serialize(new
+            {
+                type = "download_complete",
+                requestId,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            }, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            await SendTextAsync(completeJson);
+        }
+        catch (Exception ex)
+        {
+            var errorJson = JsonSerializer.Serialize(new
+            {
+                type = "download_error",
                 requestId,
                 timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
                 code = 500,
@@ -326,17 +483,24 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
         try
         {
             var (requestId, chunkIndex, totalChunks, payload) = WsBinaryFrame.ParseFrame(data.ToArray());
-
             var requestIdStr = requestId.ToString();
 
             if (_downloads.TryGetValue(requestIdStr, out var ctx))
             {
-                await ctx.PipeWriter.WriteAsync(new ReadOnlyMemory<byte>(payload));
-
-                if (endOfMessage && totalChunks > 0 && chunkIndex == totalChunks - 1)
+                // 优先写入 FileStream（upload 场景），否则写入 PipeWriter（download 场景）
+                if (ctx.FileStream != null)
                 {
-                    ctx.PipeWriter.Complete();
-                    _downloads.TryRemove(requestIdStr, out _);
+                    await ctx.FileStream.WriteAsync(payload);
+                }
+                else
+                {
+                    await ctx.PipeWriter.WriteAsync(new ReadOnlyMemory<byte>(payload));
+
+                    if (endOfMessage && totalChunks > 0 && chunkIndex == totalChunks - 1)
+                    {
+                        ctx.PipeWriter.Complete();
+                        _downloads.TryRemove(requestIdStr, out _);
+                    }
                 }
             }
         }
@@ -388,11 +552,16 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
 
     /// <summary>
     /// 计算认证 token
-    /// token = SHA256(clientId + ":" + clientSecret + ":" + timestamp)
+    /// 服务端存储的是 SHA256(clientSecret)，并用它作为密钥材料计算 token。
+    /// 因此客户端需要先对 clientSecret 做一次 SHA256，再参与 token 计算。
+    /// token = SHA256(clientId + ":" + SHA256(clientSecret) + ":" + timestamp)
     /// </summary>
     private static string ComputeToken(string clientId, string clientSecret, long timestamp)
     {
-        var input = $"{clientId}:{clientSecret}:{timestamp}";
+        // 先对 secret 做一次哈希，与服务端存储的 ClientSecretHash 一致
+        var secretHashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(clientSecret));
+        var secretHash = Convert.ToHexString(secretHashBytes).ToLowerInvariant();
+        var input = $"{clientId}:{secretHash}:{timestamp}";
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
@@ -709,8 +878,10 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
     internal class DownloadContext
     {
         public PipeWriter PipeWriter { get; set; } = null!;
+        public FileStream? FileStream { get; set; }
         public int TotalChunks { get; set; }
         public string FilePath { get; set; } = string.Empty;
+        public TaskCompletionSource<bool> CompletionSource { get; set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }
 

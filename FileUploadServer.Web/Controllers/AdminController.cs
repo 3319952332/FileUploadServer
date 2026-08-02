@@ -28,7 +28,7 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var keys = await _dbContext.ApiKeys
@@ -49,7 +49,7 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         // 验证keyType
@@ -82,7 +82,7 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var apiKey = await _dbContext.ApiKeys.FirstOrDefaultAsync(k => k.Key == key);
@@ -105,7 +105,7 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var expiredKeys = await _dbContext.ApiKeys
@@ -124,11 +124,7 @@ public class AdminController : ControllerBase
     [HttpPut("/api/admin/files/{id}/public")]
     public async Task<IActionResult> SetFilePublic(int id, [FromBody] SetPublicRequest request)
     {
-        if (!IsLocalRequest())
-        {
-            return Forbid();
-        }
-
+        // 已有 API key 中间件认证，无需 localhost 限制
         var file = await _dbContext.Files.FindAsync(id);
         if (file == null)
         {
@@ -145,6 +141,28 @@ public class AdminController : ControllerBase
     /// <summary>
     /// 查询所有公共文件（仅localhost，分页）
     /// </summary>
+    /// <summary>公开文件列表（无需认证）</summary>
+    [HttpGet("/api/public/files")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<ActionResult<List<object>>> GetPublicFileList()
+    {
+        var files = await _dbContext.Files
+            .Where(f => f.IsPublic && !string.IsNullOrEmpty(f.PublicPath))
+            .OrderByDescending(f => f.UploadedAt)
+            .Select(f => new
+            {
+                f.Id,
+                f.FileName,
+                f.FileSize,
+                f.ContentType,
+                f.PublicPath,
+                f.UploadedAt,
+                Url = $"/p{f.PublicPath}"
+            })
+            .ToListAsync();
+        return Ok(files);
+    }
+
     [HttpGet("/api/admin/files/public")]
     public async Task<ActionResult<List<FileItem>>> GetPublicFiles(
         [FromQuery] int page = 1,
@@ -152,7 +170,7 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var files = await _dbContext.Files
@@ -173,7 +191,7 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var publicFiles = await _dbContext.Files
@@ -233,7 +251,7 @@ public class IpWhitelistController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var whitelist = await _ipWhitelistService.GetAllAsync();
@@ -250,7 +268,7 @@ public class IpWhitelistController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         if (string.IsNullOrEmpty(ipAddress))
@@ -280,7 +298,7 @@ public class IpWhitelistController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            return Forbid();
+            return StatusCode(StatusCodes.Status403Forbidden);
         }
 
         await _ipWhitelistService.RemoveAsync(id);

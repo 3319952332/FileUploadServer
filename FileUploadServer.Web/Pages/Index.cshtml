@@ -70,7 +70,13 @@
                                         <span class="text-muted">—</span>
                                     }
                                 </td>
-                                <td class="text-break">@file.FileName</td>
+                                <td class="text-break">
+                                    @file.FileName
+                                    @if (!string.IsNullOrEmpty(file.StoragePath))
+                                    {
+                                        <br /><small class="text-muted">📁 @file.StoragePath</small>
+                                    }
+                                </td>
                                 <td>@FormatFileSize(file.FileSize)</td>
                                 <td>@TimeZoneInfo.ConvertTimeFromUtc(file.UploadedAt, TimeZoneInfo.FindSystemTimeZoneById("Asia/Shanghai"))</td>
                                 <td>
@@ -129,7 +135,13 @@
                     else
                     {
                         <div class="card-body p-2 text-center">
-                            <p class="card-title text-break mb-1" style="font-size: 0.75rem; margin-bottom: 0.25rem !important;">@file.FileName</p>
+                            <p class="card-title text-break mb-1" style="font-size: 0.75rem; margin-bottom: 0.25rem !important;">
+                                @file.FileName
+                                @if (!string.IsNullOrEmpty(file.StoragePath))
+                                {
+                                    <br /><small class="text-muted">📁 @file.StoragePath</small>
+                                }
+                            </p>
                             <div class="text-center text-muted" style="font-size: 0.65rem; margin-bottom: 0.5rem !important;">
                                 <span>@FormatFileSize(file.FileSize)</span>
                             </div>
@@ -177,6 +189,10 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="uploadPath" class="form-label">存储路径（可选，如 docs/readme.txt）</label>
+                        <input class="form-control" type="text" id="uploadPath" name="path" placeholder="留空则使用文件名">
+                    </div>
                     <div class="mb-3">
                         <label for="formFile" class="form-label">选择文件（可多选）</label>
                         <input class="form-control" type="file" id="formFile" name="UploadedFiles" multiple required>
