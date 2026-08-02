@@ -186,7 +186,15 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
                         break;
 
                     case WebSocketMessageType.Binary:
-                        await HandleBinaryMessage(new ReadOnlyMemory<byte>(buffer, 0, result.Count), result.EndOfMessage);
+                        // 二进制帧可能大于接收缓冲区（帧头 24B + 64KB 数据），必须累积到 EndOfMessage 再处理，
+                        // 否则跨缓冲区边界的帧会被截断（丢失尾部数据，详见 doc/12-bug-tracker.md）。
+                        messageBuffer.Write(buffer, 0, result.Count);
+                        if (result.EndOfMessage)
+                        {
+                            var frameData = messageBuffer.ToArray();
+                            messageBuffer.SetLength(0);
+                            await HandleBinaryMessage(frameData);
+                        }
                         break;
 
                     case WebSocketMessageType.Close:
@@ -475,14 +483,15 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
     /// <summary>
     /// 处理二进制消息（文件数据块）
     /// </summary>
-    private async Task HandleBinaryMessage(ReadOnlyMemory<byte> data, bool endOfMessage)
+    /// <param name="frame">完整二进制帧（含 24 字节帧头 + 载荷数据）</param>
+    private async Task HandleBinaryMessage(byte[] frame)
     {
-        if (data.Length < WsBinaryFrame.HeaderSize)
+        if (frame.Length < WsBinaryFrame.HeaderSize)
             return;
 
         try
         {
-            var (requestId, chunkIndex, totalChunks, payload) = WsBinaryFrame.ParseFrame(data.ToArray());
+            var (requestId, chunkIndex, totalChunks, payload) = WsBinaryFrame.ParseFrame(frame);
             var requestIdStr = requestId.ToString();
 
             if (_downloads.TryGetValue(requestIdStr, out var ctx))
@@ -496,7 +505,7 @@ public class WsFileStorageClient : IFileStorageClient, IAsyncDisposable
                 {
                     await ctx.PipeWriter.WriteAsync(new ReadOnlyMemory<byte>(payload));
 
-                    if (endOfMessage && totalChunks > 0 && chunkIndex == totalChunks - 1)
+                    if (totalChunks > 0 && chunkIndex == totalChunks - 1)
                     {
                         ctx.PipeWriter.Complete();
                         _downloads.TryRemove(requestIdStr, out _);
