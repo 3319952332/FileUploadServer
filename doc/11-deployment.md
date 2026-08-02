@@ -48,7 +48,7 @@
 | 角色 | 地址 | 访问方式 | 部署目录 |
 |------|------|----------|----------|
 | **网关（Web）** | `111.229.53.125:7000` | `ubuntu` + `~/.ssh/CouldServer_1.pem` | `/home/ubuntu/fileuploadserver/` |
-| **WS 存储节点** | `192.168.1.4` | `laowang` + 密码 | 程序 `/home/laowang/wsclient/`，数据 `/home/laowang/wsdata/` |
+| **WS 存储节点** | `192.168.1.4` | `laowang` + `~/.ssh/id_rsa_self` 公钥免密 | 程序 `/home/laowang/wsclient/`，数据 `/home/laowang/wsdata/` |
 | **PostgreSQL** | 网关本机 `5432` | `postgres` | 数据库 `fileupload` |
 | **MCP Server** | 本地（stdio） | 配置到 Claude Code | 无需远程部署 |
 
@@ -189,6 +189,8 @@ cd /opt/fileupload-wsclient
 > - `--secret` 若遗失，通过网关 `POST /api/admin/ws-clients/{id}/regenerate-secret` 重新生成
 > - `--paths "/*"` 必须加引号，防止 shell 通配符展开
 > - 同一 client-id 只允许 1 个进程，多进程会争抢连接导致反复断连
+>
+> **运维访问 WS 节点**：`ssh -i ~/.ssh/id_rsa_self laowang@192.168.1.4`（公钥免密，无需密码；程序目录 `/home/laowang/wsclient/`，数据目录 `/home/laowang/wsdata/`）。注意：密码认证实际不可用，务必使用 `id_rsa_self` 公钥。
 
 ### 4.4 验证 WS 连接
 

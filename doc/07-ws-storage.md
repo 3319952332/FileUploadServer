@@ -497,6 +497,8 @@ class WsClientConnection {
    │◄──────────────────────────────────│ fileHash, fileSize
 ```
 
+> **网关本地临时副本清理**：业务上传流程（`FileApiController.Upload` / `Index.cshtml.cs` OnPostAsync）会先在网关本地 `wwwroot/uploads` 加密写一份临时副本，再经 `WsStorageStrategy.WriteAsync` 转发 WS 节点。**WS 转发成功后立即删除本地临时副本**（本地仅作中转，正式存储为 WS 节点）；WS 转发失败降级本地时保留本地文件。这避免网关本地累积无记录对应的孤儿密文（存量孤儿已手动清理，根治记录见 [12-bug-tracker.md](12-bug-tracker.md)）。
+
 ### 下载时序
 
 ```
