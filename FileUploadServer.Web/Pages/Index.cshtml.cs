@@ -226,13 +226,10 @@ public class IndexModel : PageModel
             return Forbid();
         }
 
-        // Delete physical file
-        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
-        var filePath = Path.Combine(uploadsPath, file.StoredFileName);
-        if (System.IO.File.Exists(filePath))
-        {
-            System.IO.File.Delete(filePath);
-        }
+        // 清理物理文件（WS 远程 + FileLocation + 本地加密子目录）
+        using var deleteScope = _scopeFactory.CreateScope();
+        var deleteService = deleteScope.ServiceProvider.GetRequiredService<FileDeleteService>();
+        await deleteService.DeletePhysicalAsync(file);
 
         await _repository.DeleteAsync(file);
         await _repository.SaveChangesAsync();
@@ -264,7 +261,8 @@ public class IndexModel : PageModel
             return Page();
         }
 
-        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
+        using var deleteScope = _scopeFactory.CreateScope();
+        var deleteService = deleteScope.ServiceProvider.GetRequiredService<FileDeleteService>();
         int deletedCount = 0;
 
         foreach (var id in ids)
@@ -272,12 +270,8 @@ public class IndexModel : PageModel
             var file = await _repository.GetByIdAsync(id);
             if (file != null && await _permissionService.CanAccessFileAsync(id, _currentApiKey))
             {
-                // Delete physical file
-                var filePath = Path.Combine(uploadsPath, file.StoredFileName);
-                if (System.IO.File.Exists(filePath))
-                {
-                    System.IO.File.Delete(filePath);
-                }
+                // 清理物理文件（WS 远程 + FileLocation + 本地加密子目录）
+                await deleteService.DeletePhysicalAsync(file);
 
                 await _repository.DeleteAsync(file);
                 deletedCount++;

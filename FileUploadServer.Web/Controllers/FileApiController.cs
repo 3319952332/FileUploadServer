@@ -19,6 +19,7 @@ public class FileApiController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IStorageStrategyFactory _storageStrategyFactory;
+    private readonly FileDeleteService _deleteService;
     private readonly ILogger<FileApiController> _logger;
 
     public FileApiController(
@@ -28,6 +29,7 @@ public class FileApiController : ControllerBase
         AppDbContext dbContext,
         IServiceScopeFactory scopeFactory,
         IStorageStrategyFactory storageStrategyFactory,
+        FileDeleteService deleteService,
         ILogger<FileApiController> logger)
     {
         _repository = repository;
@@ -36,6 +38,7 @@ public class FileApiController : ControllerBase
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
         _storageStrategyFactory = storageStrategyFactory;
+        _deleteService = deleteService;
         _logger = logger;
     }
 
@@ -283,55 +286,8 @@ public class FileApiController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden);
         }
 
-        // WebSocket storage mode: delete from remote client
-        if (file.StorageMode == "WebSocket" && !string.IsNullOrEmpty(file.ClientId))
-        {
-            try
-            {
-                var wsStrategy = HttpContext.RequestServices.GetRequiredService<WsStorageStrategy>();
-                var remotePath = file.StoragePath ?? file.FileName;
-                await wsStrategy.DeleteAsync(remotePath);
-                _logger.LogInformation("File deleted from WS client {ClientId}: {Path}", file.ClientId, remotePath);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "WS delete failed for ClientId={ClientId}, Path={Path}, deleting local record anyway", file.ClientId, file.StoragePath);
-            }
-
-            // Delete FileLocation record
-            try
-            {
-                var fileLocations = await _dbContext.Set<FileLocation>()
-                    .Where(fl => fl.FilePath == (file.StoragePath ?? file.FileName) && fl.ClientId == file.ClientId)
-                    .ToListAsync();
-                if (fileLocations.Count > 0)
-                {
-                    _dbContext.Set<FileLocation>().RemoveRange(fileLocations);
-                    await _dbContext.SaveChangesAsync();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to delete FileLocation record for Path={Path}", file.StoragePath);
-            }
-        }
-
-        // 删除物理文件（支持加密文件的子目录路径）
-        var uploadsPath = Path.Combine(_env.WebRootPath, "uploads");
-        string filePath;
-        if (file.EncryptionVersion > 0 && !string.IsNullOrEmpty(file.DiskFileName))
-        {
-            var subDir = Path.Combine(uploadsPath, file.DiskFileName[..2]);
-            filePath = Path.Combine(subDir, file.DiskFileName);
-        }
-        else
-        {
-            filePath = Path.Combine(uploadsPath, file.StoredFileName);
-        }
-        if (System.IO.File.Exists(filePath))
-        {
-            System.IO.File.Delete(filePath);
-        }
+        // 统一清理物理文件（WS 远程 + FileLocation + 本地加密子目录）
+        await _deleteService.DeletePhysicalAsync(file);
 
         await _repository.DeleteAsync(file);
         await _repository.SaveChangesAsync();

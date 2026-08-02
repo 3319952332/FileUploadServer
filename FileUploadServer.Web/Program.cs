@@ -107,6 +107,8 @@ builder.Services.AddScoped<WsStorageStrategy>();
 
 // 共享下载服务（统一 WS/本地读取 + 透明解密，供网页/API/公共访问共用）
 builder.Services.AddScoped<FileDownloadService>();
+// 共享删除服务（统一 WS 远程删除 + FileLocation + 本地物理文件清理，供网页/API 共用）
+builder.Services.AddScoped<FileDeleteService>();
 
 // 注册限流
 builder.Services.AddRateLimiter(options =>
