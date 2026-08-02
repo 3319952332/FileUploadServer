@@ -47,7 +47,7 @@
 
 | 角色 | 地址 | 访问方式 | 部署目录 |
 |------|------|----------|----------|
-| **网关（Web）** | `111.229.53.125:7000` | `ubuntu` + `~/.ssh/CouldServer_1.pem` | `/home/ubuntu/fileuploadserver/` |
+| **网关（Web）** | HTTP `111.229.53.125:7000` / HTTPS `file.sub.opengm.top`（Nginx 反代） | `ubuntu` + `~/.ssh/CouldServer_1.pem` | `/home/ubuntu/fileuploadserver/` |
 | **WS 存储节点** | `192.168.1.4` | `laowang` + `~/.ssh/id_rsa_self` 公钥免密 | 程序 `/home/laowang/wsclient/`，数据 `/home/laowang/wsdata/` |
 | **PostgreSQL** | 网关本机 `5432` | `postgres` | 数据库 `fileupload` |
 | **MCP Server** | 本地（stdio） | 配置到 Claude Code | 无需远程部署 |
@@ -178,7 +178,7 @@ rm -f /opt/fileupload-wsclient/*.runtimeconfig.dev.json
 cd /opt/fileupload-wsclient
 ./FileUploadServer.WsClient \
   --mode ws \
-  --server ws://111.229.53.125:7000 \
+  --server ws://111.229.53.125:7000 \   # ws 直连（当前生产用）；走 HTTPS 可用 wss://file.sub.opengm.top
   --client-id storage-node-a \
   --client-secret sk-wsc-a1b2c3d4e5f6... \
   --storage-path /home/laowang/wsdata \
@@ -249,6 +249,83 @@ server {
 3. **数据库连接池**：多网关节点注意 `MaxPoolSize` 配置
 4. **定时任务去重**：`BackgroundCleanupService` 和 `KeyRotationService` 多节点会重复执行，后期可引入分布式锁
 
+### 5.3 HTTPS 证书部署（生产网关）
+
+网关所在服务器（`111.229.53.125`）用 **Nginx** 提供 HTTPS 入口，`file.sub.opengm.top` 反代到本机网关 `http://localhost:7000`。
+
+#### 证书文件与脚本位置
+
+| 项 | 位置 |
+|----|------|
+| 证书更新脚本 | `/home/ubuntu/resetnginx.sh`（管理证书复制 + 重启 nginx） |
+| 证书源目录 | `/home/ubuntu/Download/`（新证书放这里） |
+| 证书存放目录 | `/etc/nginx/opengm/`（nginx 引用） |
+| nginx 配置 | `/etc/nginx/nginx.conf`（server 块 / 反代） |
+
+#### resetnginx.sh 管理的证书列表（CERT_PAIRS）
+
+```bash
+# /home/ubuntu/resetnginx.sh 中的 CERT_PAIRS（每对 = 证书:私钥）
+"ai.sub.opengm.top_bundle.pem:ai.sub.opengm.top.key"
+"web.sub.opengm.top_bundle.pem:web.sub.opengm.top.key"
+"www.opengm.top_bundle.pem:www.opengm.top.key"
+"file.sub.opengm.top_bundle.pem:file.sub.opengm.top.key"   # 本项目网关 HTTPS 入口
+```
+
+#### file.sub.opengm.top server 块（nginx.conf）
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name file.sub.opengm.top;
+
+    ssl_certificate /etc/nginx/opengm/file.sub.opengm.top_bundle.pem;
+    ssl_certificate_key /etc/nginx/opengm/file.sub.opengm.top.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # 大文件上传（网关最大 1GB）+ 长传输超时
+    client_max_body_size 1G;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+
+    location / {
+        proxy_pass http://localhost:7000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;            # WebSocket 支持（WS 节点可走 wss）
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    access_log /var/log/nginx/file.sub.opengm.top.access.log;
+    error_log /var/log/nginx/file.sub.opengm.top.error.log;
+}
+```
+
+#### 证书更新流程
+
+```bash
+# 1. 上传新证书到 ~/Download/（*_bundle.pem + *.key）
+scp -i ~/.ssh/CouldServer_1.pem <新证书>.pem <新证书>.key ubuntu@111.229.53.125:~/Download/
+
+# 2. 备份（安全网）
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 \
+  "sudo cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak && cp resetnginx.sh resetnginx.sh.bak"
+
+# 3. 运行脚本：复制证书到 /etc/nginx/opengm/ + 重启 nginx
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "bash /home/ubuntu/resetnginx.sh"
+
+# 4. 验证（公网）
+for d in ai.sub.opengm.top web.sub.opengm.top www.opengm.top file.sub.opengm.top; do
+  curl -s -o /dev/null -w "$d: %{http_code}\n" "https://$d/"
+done
+```
+
+> ⚠️ 证书有效期约 3 个月，临近过期需续期（本项目在网证书 2026-10-31 到期）。
+> ⚠️ `file.sub.opengm.top` 需在 DNS 服务商配置 A 记录指向 `111.229.53.125`，否则公网无法解析。
+
 ## 6. MCP Server 接入
 
 MCP Server 走 stdio，**运行在 Claude Code 所在机器（本地）**，不部署到远程。
@@ -264,7 +341,7 @@ MCP Server 走 stdio，**运行在 Claude Code 所在机器（本地）**，不�
       "command": "dotnet",
       "args": ["run", "--project", "FileUploadServer.Mcp/FileUploadServer.Mcp.csproj"],
       "env": {
-        "FILE_SERVER_BASE_URL": "http://111.229.53.125:7000",
+        "FILE_SERVER_BASE_URL": "https://file.sub.opengm.top",
         "FILE_SERVER_MASTER_KEY": "<Admin 密钥>"
       }
     }
@@ -400,17 +477,34 @@ sudo systemctl start fileupload
 sudo systemctl status fileupload
 ```
 
-### 8.7 健康检查
+### 8.7 证书管理（HTTPS）
+
+```bash
+# 更新证书（复制到 /etc/nginx/opengm/ + 重启 nginx）
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "bash /home/ubuntu/resetnginx.sh"
+
+# 检查证书有效期
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 \
+  "openssl x509 -in /etc/nginx/opengm/file.sub.opengm.top_bundle.pem -noout -enddate"
+
+# 校验 nginx 配置
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "sudo nginx -t"
+
+# 验证 HTTPS 入口（反代网关，预期 401 = API Key 中间件拦截，链路正常）
+curl -s -o /dev/null -w '%{http_code}' https://file.sub.opengm.top/
+```
+
+### 8.8 健康检查
 
 ```bash
 # 网关首页（预期 401，说明 API Key 中间件正常工作）
-curl -s -o /dev/null -w '%{http_code}' http://111.229.53.125:7000/
+curl -s -o /dev/null -w '%{http_code}' https://file.sub.opengm.top/
 
 # Swagger（预期 200）
-curl -s -o /dev/null -w '%{http_code}' http://111.229.53.125:7000/swagger
+curl -s -o /dev/null -w '%{http_code}' https://file.sub.opengm.top/swagger
 
 # API 列表（需有效 key）
-curl -s "http://111.229.53.125:7000/api/files?key=<ADMIN_KEY>" | head -c 200
+curl -s "https://file.sub.opengm.top/api/files?key=<ADMIN_KEY>" | head -c 200
 ```
 
 ## 9. 已知部署问题

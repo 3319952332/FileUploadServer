@@ -314,7 +314,7 @@ delay = retryBaseDelay (默认 1s) * 3^attempt
 ```json
 {
   "McpServer": {
-    "FileServerBaseUrl": "http://111.229.53.125:7000",
+    "FileServerBaseUrl": "https://file.sub.opengm.top",
     "MasterApiKey": "",
     "RequestTimeoutSeconds": 300,
     "MaxRetries": 2

@@ -30,7 +30,7 @@ graph LR
         MCPSrv[MCP Server<br/>stdio JSON-RPC]
     end
 
-    subgraph Gateway[网关服务器 111.229.53.125:7000]
+    subgraph Gateway[网关服务器 file.sub.opengm.top<br/>111.229.53.125:7000]
         WEB[FileUploadServer.Web<br/>认证 · 路由 · 元数据]
         PG[(PostgreSQL<br/>5432)]
         LOCAL[(本地磁盘<br/>wwwroot/uploads)]
