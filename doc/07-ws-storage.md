@@ -427,6 +427,13 @@ class WsClientConnection {
 3. 等待 delete_complete (PendingResponses, 30s 超时)
 ```
 
+### 与共享服务的集成（FileDownloadService / FileDeleteService）
+
+`WsStorageStrategy` 不直接面向业务入口，业务层通过两个共享服务调用：
+
+- **下载解密** `FileDownloadService.OpenDecryptedStreamAsync`（`Web/Services/FileDownloadService.cs`）：内部判断 `StorageMode == "WebSocket"` 时调用 `WsStorageStrategy.ReadAsync`，再按 `EncryptionVersion` 包装 `AesGcmDecryptStream`。网页 / API / 公共访问三入口统一走它。
+- **删除清理** `FileDeleteService.DeletePhysicalAsync`（`Web/Services/FileDeleteService.cs`）：内部调用 `WsStorageStrategy.DeleteAsync` 删除远程文件，并清理 `FileLocation` 记录 + 本地物理文件（含加密子目录）。网页 / API 删除统一走它，避免 WS 节点密文残留。
+
 ---
 
 ## 消息处理器

@@ -236,13 +236,15 @@ Read(buffer, offset, count):
 
 > 设计意图（来自 IMPLEMENTATION_PLAN Phase 1.5）：上传流程应通过 `FileApiController` → `StorageStrategy.WriteAsync` → `AesGcmEncryptStream` 完成透明加密；下载流程反向解密。当前加密逻辑可能通过 `KeyRotationService.ReEncryptFileAsync` 中的直接使用 `AesGcmEncryptStream`/`AesGcmDecryptStream` 实现（见 [05-key-management.md](05-key-management.md)），而非通过 `LocalStorageStrategy` 的 TODO 代码路径。
 
-### 5.2 WsStorageStrategy 场景
+### 5.2 统一解密：FileDownloadService
 
-WS 存储节点上的加密文件通过 `PublicFileMiddleware` 的 Step 8.5（已屏蔽）下载时，曾出现解密失败：
+三个下载入口（网页 `Download.cshtml.cs`、API `FileApiController.Download`、公共访问 `PublicFileMiddleware`）通过共享 `FileDownloadService.OpenDecryptedStreamAsync`（`Web/Services/FileDownloadService.cs`）统一「读取（WS/本地）+ 透明解密」：
 
-- **现象**：新上传文件公开访问解密成功，老文件（7 月 11 日前）解密失败
-- **根因**：`AesGcmDecryptStream` tag mismatch -- 老密文与当前密钥不匹配，属于**数据层问题**，非代码 bug
-- **结论**：老文件需由用户重新上传；详见 [06-public-access.md](06-public-access.md) 和 DEV_LOG
+- 若 `file.EncryptionVersion > 0` 且 `keyProvider.SupportsKeyVersion(file.KeyVersion)`，返回 `AesGcmDecryptStream` 透明解密流
+- 否则返回原始字节流（加密未初始化 / 密钥版本不支持时降级明文，与既有行为一致）
+- 磁盘路径解析统一为 `FileDownloadService.ResolveDiskPath`（加密文件用子目录 + DiskFileName，明文用 StoredFileName）
+
+**历史问题**：部分老文件（7-11 及 8-02 上传）用已丢失密钥加密，解密时 tag mismatch，属**数据层问题**（非代码 bug），需用户重新上传。详见 [06-public-access.md](06-public-access.md) 与 [14-dev-log.md](14-dev-log.md)。
 
 ---
 

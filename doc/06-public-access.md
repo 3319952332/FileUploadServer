@@ -17,27 +17,21 @@
 
 ---
 
-## 1. ⚠️ 重要现状：功能已屏蔽
+## 1. ✅ 现状：功能已修复并重新启用
 
-**`PublicFileMiddleware` 已于 2026-08-02 在 `Program.cs` 中注释屏蔽**，不再处理 `/p/*` 路径的请求。以下为 `Program.cs` 中的屏蔽代码（`FileUploadServer.Web/Program.cs:188-198`）：
+**`PublicFileMiddleware` 已重新启用**（`Program.cs` 中 `app.UseMiddleware<PublicFileMiddleware>();`），通过共享 `FileDownloadService` 统一了「读取（WS/本地）+ 透明解密」逻辑，网页 / API / 公共访问三入口解密一致。
 
-```csharp
-// 公共文件访问中间件（在 API Key 鉴权之前，因为公开访问不需要 key）
-// =====================================================================
-// ⛔ 2026-08-02 屏蔽公共文件访问（/p/ 路径），问题待整改：
-//   1. WS 存储的加密文件经 /p/ 访问时，服务端解密失败
-//      （AesGcmDecryptStream tag mismatch，老密文与当前密钥不匹配 → 503）
-//   2. PublicFileMiddleware 直接连接 WS 节点读取文件，违背
-//      "所有文件访问统一走 API（FileApiController）" 的分层架构
-//   整改方向：公开访问统一走 FileApiController.Download 的封装，
-//   或公开文件限定本地磁盘存储；修复后再启用本中间件。
-// =====================================================================
-// app.UseMiddleware<PublicFileMiddleware>();
-```
+**修复内容**（提交 `8faadd5`）：
+1. 删除中间件内 WS 直连分支（Step 8.5），统一走 `FileDownloadService`（支持 WS + 本地 + 解密）
+2. 本地分支（Step 12）补上透明解密（修复返回密文问题）
+3. 修复 `ApiKeyAuthMiddleware` 的 `/p/` 跳过 bug（`StartsWithSegments("/p/")` → `"/p"`）
+4. 重新启用中间件
 
-**当前后果**：所有 `/p/*` 路径请求不会被任何中间件/Controller 处理，直接返回 404（由 ASP.NET Core 默认路由返回）。
+**测试**：`/p/public/hello.txt` 明文返回；新上传文件三入口返回相同明文。
 
-> 重要：以下第 2-6 节描述的是 `PublicFileMiddleware` 的**原始设计**，代码保留在仓库中但**当前不可达**。记录这些内容是为了整改时参考，不是描述当前运行时行为。
+> 历史遗留：部分老文件（7-11 及 8-02 上传）用已丢失密钥加密，当前密钥无法解密（tag mismatch），属数据层问题，需重新上传。
+
+> 以下第 2-6 节描述 `PublicFileMiddleware` 的原始设计（12 步流程、限流等），中间件当前已启用，以下内容供实现细节参考。
 
 ---
 
@@ -238,21 +232,19 @@ var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
 
 ---
 
-## 7. 屏蔽原因与整改方向
+## 7. 修复记录（提交 8faadd5）
 
-### 7.1 屏蔽根因
+### 7.1 修复内容
 
-| 问题 | 严重程度 | 说明 |
-|---|---|---|
-| WS 加密文件 tag mismatch | 功能级 | 老文件密文与当前密钥不匹配，导致所有 WS 存储的加密文件经 `/p/` 访问返回 503 |
-| 中间件直连 WS 节点违背分层架构 | 架构级 | `PublicFileMiddleware` 绕过 `FileApiController` 直接操作 `WsStorageStrategy`，破坏了"所有文件访问统一走 API"的分层设计 |
+| 原问题 | 修复方式 |
+|---|---|
+| WS 加密文件解密失败 / 本地分支返回密文 | 新建 `FileDownloadService` 统一「读取 + 解密」，中间件删除 WS 直连分支、统一调用 |
+| 中间件直连 WS 节点违背分层架构 | 删除 Step 8.5 直连分支，改走共享 `FileDownloadService`（支持 WS + 本地） |
+| `ApiKeyAuthMiddleware:27` `/p/` 跳过 bug | `StartsWithSegments("/p/")` → `StartsWithSegments("/p")` |
 
-### 7.2 整改方向（来自 DEV_LOG）
+### 7.2 遗留问题
 
-1. **统一封装**：公开访问走 `FileApiController.Download` 的共享封装，或公开文件限定本地磁盘存储
-2. **修复 `ApiKeyAuthMiddleware:27` bug**：`StartsWithSegments("/p/")` 对 `/p/public/...` 可能返回 false，需改用 `Path.StartsWith("/p/")` 或 `StartsWithSegments("/p")`
-3. **重新启用 `PublicFileMiddleware`**：删除 Step 8.5（WS 直接读取分支），由 API 层统一处理
-4. **老文件恢复**：p.txt/d.txt/fresh.txt/Markdown入门.md 等老文件密文无法解密 → 需用户提供原文件重新上传
+老文件（p.txt/d.txt/fresh.txt/Markdown入门.md、8-02 上传的 new_public.txt 与 8 张图片等）密文无法解密（密钥已丢失）→ 需用户提供原文件重新上传。
 
 ### 7.3 当前可用的公共文件查询
 

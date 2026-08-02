@@ -196,7 +196,7 @@ System.IO.File.SetUnixFileMode(filePath,
 | 6 | **sshpass 不可用** | 密码认证无 sshpass（WSL 环境未安装） | `SSH_ASKPASS` + `setsid` 方式 |
 | 7 | **沙箱管道丢环境变量** | Bash 工具管道中内联环境变量丢失 | 用输入重定向 `< file` 代替管道 |
 
-## 4. 公开访问排查踩坑（3 项）
+## 4. 公开访问排查踩坑（5 项）
 
 来源：[14-dev-log.md](14-dev-log.md) — 2026-08-02 排查记录
 
@@ -205,6 +205,8 @@ System.IO.File.SetUnixFileMode(filePath,
 | 1 | **StartsWithSegments("/p/") 不匹配** | `PathString.StartsWithSegments("/p/")` 对 `/p/public/...` 返回 **False**（实测），导致 API Key 中间件对公开路径起了鉴权 | 定位到 `ApiKeyAuthMiddleware:27` 既有 bug，此前被 PublicFileMiddleware 屏蔽掩盖 |
 | 2 | **老文件 tag mismatch** | 新上传文件公开访问解密成功（说明解密逻辑正确），但 7-11 上传的老文件解密失败（`CryptographicException: tag mismatch`） | 老密文与当前密钥不匹配（数据层问题），改代码无法修复，只能重传 |
 | 3 | **本地解密验证 vs 网关结果矛盾** | 本地用密钥文件解密失败，网关公开访问新文件却成功 — 看似矛盾 | 最终确认：网关用密钥文件，本地验证方法正确；老文件确实无法解密，新文件正常 |
+| 4 | **三个下载入口解密不一致** | 网页下载正常、MCP 下载返回 `FUEC` 密文、公共访问解密异常（三处都指向 WS 节点） | 根因：解密逻辑未统一，`FileApiController.Download` 的 WS 分支漏解密；新建 `FileDownloadService` 统一三入口解密修复 |
+| 5 | **网页删除不清理 WS 节点文件** | 网页删除后数据库记录没了，但 WS 节点密文永久残留（只删了本地 `StoredFileName`） | 根因：`Index.cshtml.cs` 删除逻辑缺失 WS 远程 + 加密子目录 + FileLocation 清理；新建 `FileDeleteService` 统一修复 |
 
 ## 5. 教训总结
 

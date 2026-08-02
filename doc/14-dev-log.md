@@ -8,8 +8,8 @@
 
 ## 2026-08-02
 
-**记录范围**：MCP 接口开发、分布式部署（网关 + WS 节点）、公开访问问题排查与屏蔽、部署流程优化
-**涉及版本**：`b26d430`（feat: MCP接口开发 + 网关更新（屏蔽公开访问）+ 部署skill优化）
+**记录范围**：MCP 接口开发、分布式部署（网关 + WS 节点）、公开访问问题排查与屏蔽、部署流程优化、三入口解密统一、网页删除 WS 清理
+**涉及版本**：`b26d430`（MCP + 屏蔽公开访问）、`8faadd5`（统一三入口解密）、`ff83450`（网页删除 WS 清理）
 
 ### 一、概述
 
@@ -137,6 +137,44 @@ FileUploadServer.Mcp/
 - `.claude/skills/deploy-file-upload-server/SKILL.md` — 优化后的部署 skill（git 提交推送 + 敏感信息检查 + 部署后清理）
 - `.claude/skills/file-upload-server-mcp/SKILL.md` — MCP 接入 skill
 - `doc/` 下全套新文档体系
+
+### 八、修复三个下载入口解密不一致 + 网页删除 WS 清理
+
+**涉及版本**：`8faadd5`（fix: 统一三个下载入口解密逻辑）、`ff83450`（fix: 网页删除补上 WS 节点文件/FileLocation/加密子目录清理）
+
+#### 8.1 三入口解密不一致修复
+
+**问题**：网页 / MCP / 公共访问三个下载入口对 WS 加密文件解密行为不一致：
+- 网页下载（`Download.cshtml.cs` Razor Page）**独立解密** → 正常
+- MCP 下载（`FileApiController.Download` 的 WS 分支）**漏解密**，直接返回 `FUEC` 密文
+- 公共访问（`PublicFileMiddleware`）独立中间件，本地分支无解密（TODO），WS 分支解密异常被吞
+
+**根因**：解密逻辑未统一到一处，三处各自为政，只有网页那条碰巧正确。
+
+**修复**：
+- 新建 `Web/Services/FileDownloadService.cs`：统一「读取（WS/本地）+ 透明解密」，三入口共用
+- `FileApiController.Download` 补上 WS 分支解密（MCP 恢复明文）
+- `Download.cshtml.cs` 改用共享服务，顺带修复加密文件本地路径（子目录 + DiskFileName）404 bug
+- `PublicFileMiddleware` 删除 WS 直连分支、统一走共享服务
+- `ApiKeyAuthMiddleware` 修复 `/p/` 跳过 bug（`StartsWithSegments("/p/")` → `"/p"`）
+- **重新启用 `/p/` 公共访问**（Program.cs 取消屏蔽）
+
+**验证**：新上传文件三入口返回相同明文；公共访问 `/p/public/hello.txt` 明文返回。
+
+#### 8.2 网页删除不清理 WS 节点文件修复
+
+**问题**：`Index.cshtml.cs` 网页删除只删本地 `uploads/StoredFileName`，不删 WS 节点远程文件、不删加密子目录文件、不删 FileLocation 记录 → WS 节点密文永久残留。
+
+**修复**：
+- 新建 `Web/Services/FileDeleteService.cs`：统一清理 WS 远程文件 + FileLocation + 本地物理文件（加密子目录）
+- `Index.cshtml.cs` 两个删除方法、`FileApiController.Delete` 统一调用
+
+**验证**：网页删除后 WS 节点文件、FileLocation、数据库记录全部清理。
+
+#### 8.3 遗留问题
+
+- 历史文件（44/46/47-54 共 10 个）用已丢失密钥加密，当前密钥无法解密，需重新上传
+- 网页删除需 antiforgery token（ASP.NET Razor Pages 默认），自动化测试需先获取 token 再 POST
 
 ## 关联文档
 
