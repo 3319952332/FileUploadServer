@@ -6,7 +6,7 @@
 1. [历史 Bug（7 项）](#1-历史-bug7-项)
 2. [MCP 开发踩坑（7 项）](#2-mcp-开发踩坑7-项)
 3. [部署踩坑（7 项）](#3-部署踩坑7-项)
-4. [公开访问排查踩坑（3 项）](#4-公开访问排查踩坑3-项)
+4. [公开访问排查踩坑（7 项）](#4-公开访问排查踩坑7-项)
 5. [教训总结](#5-教训总结)
 
 ## 1. 历史 Bug（7 项）
@@ -196,7 +196,7 @@ System.IO.File.SetUnixFileMode(filePath,
 | 6 | **sshpass 不可用** | 密码认证无 sshpass（WSL 环境未安装） | `SSH_ASKPASS` + `setsid` 方式 |
 | 7 | **沙箱管道丢环境变量** | Bash 工具管道中内联环境变量丢失 | 用输入重定向 `< file` 代替管道 |
 
-## 4. 公开访问排查踩坑（6 项）
+## 4. 公开访问排查踩坑（7 项）
 
 来源：[14-dev-log.md](14-dev-log.md) — 2026-08-02 排查记录
 
@@ -208,6 +208,7 @@ System.IO.File.SetUnixFileMode(filePath,
 | 4 | **三个下载入口解密不一致** | 网页下载正常、MCP 下载返回 `FUEC` 密文、公共访问解密异常（三处都指向 WS 节点） | 根因：解密逻辑未统一，`FileApiController.Download` 的 WS 分支漏解密；新建 `FileDownloadService` 统一三入口解密修复 |
 | 5 | **网页删除不清理 WS 节点文件** | 网页删除后数据库记录没了，但 WS 节点密文永久残留（只删了本地 `StoredFileName`） | 根因：`Index.cshtml.cs` 删除逻辑缺失 WS 远程 + 加密子目录 + FileLocation 清理；新建 `FileDeleteService` 统一修复 |
 | 6 | **上传本地副本残留** | 网关本地 `wwwroot/uploads` 累积 16 个无记录对应的孤儿密文（上传时本地加密副本从不删除） | 根因：上传流程本地加密中转副本在 WS 转发成功后未删除；修复为 WS 转发成功即删本地副本（API + 网页两处），存量孤儿已手动清理 |
+| 7 | **WS 客户端二进制帧跨缓冲区截断** | 分块上传（密文 >64KB）后 WS 节点文件尾部少 24 字节：网关日志 `DiskSize=95827` 正确，节点实际 95803；解密 `tag mismatch`，公开访问落入 ExceptionHandler→/Error 无 key 返回 401 | 根因：`WsFileStorageClient.ReceiveLoopAsync` 的 Binary 分支未像 Text 分支那样累积到 `EndOfMessage`，而帧大小（24B 头+64KB 数据=65560B）超过接收缓冲区（65536B），跨缓冲区边界的帧被截断丢失尾部 24 字节；修复为累积完整帧再交给 `HandleBinaryMessage` 解析（提交 `2383d26`，重传即恢复） |
 
 ## 5. 教训总结
 
@@ -224,6 +225,8 @@ System.IO.File.SetUnixFileMode(filePath,
 5. **分层架构：中间件不绕过 API 层直接操作存储策略**（公开访问踩坑）。PublicFileMiddleware 直接连 WS 节点违背分层，且对加密文件解密失败。
 
 6. **数据 vs 代码问题要分清**（公开访问踩坑）。老密文无法解密是数据问题，改代码无效，需重传文件。
+
+7. **WebSocket 接收必须处理分片（EndOfMessage）**（公开访问踩坑）。`ReceiveAsync` 的接收缓冲区小于单帧大小时会截断帧，且 `EndOfMessage=false` 表示还有数据要读；Text 分支做了累积，Binary 分支漏掉同样处理导致大帧（帧头+数据 > 缓冲区）尾部丢失。凡涉及 WS 传输，接收循环必须对两种消息类型一致地累积到 `EndOfMessage` 再解析。
 
 ### 5.2 类型分布
 

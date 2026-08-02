@@ -197,6 +197,28 @@ FileUploadServer.Mcp/
 
 WS 节点（192.168.1.4）经 `~/.ssh/id_rsa_self` **公钥免密**访问（密码认证实际不可用）。详见 [11-deployment.md](11-deployment.md)。
 
+### 十、WS 客户端二进制帧跨缓冲区截断修复
+
+**涉及版本**：`2383d26`（fix: WS 客户端二进制帧跨缓冲区截断丢失尾部数据）
+
+#### 10.1 问题
+
+把 Doc 目录 `Mysql接入记录.md` 的 8 张截图上传为公开图片时，`image-5.png`（明文 95751 字节）公开访问返回 401。排查链路：网关日志 `DiskSize=95827`（加密正确），但 WS 节点实际密文 **95803**，少 24 字节 → 解密 `tag mismatch` → 异常落入 ExceptionHandler → 重放 `/Error` 无 key → 401。
+
+规律：密文 < 65536 的 7 张图片全部正常，唯独密文 95827 > 65536 需要**分块**的 image-5.png 丢失 24 字节。curl 直传网关复现，排除 MCP 链路。
+
+#### 10.2 根因
+
+`WsFileStorageClient.ReceiveLoopAsync` 接收缓冲区为 `1024*64=65536` 字节，而二进制帧大小 = 帧头(24B: requestId16+chunkIndex4+totalChunks4) + 数据(64KB) = **65560B，超过缓冲区**。Binary 分支未像 Text 分支那样累积到 `EndOfMessage` 再处理，导致跨缓冲区边界的帧被截断，尾部 24 字节（恰为帧头长度）丢失。
+
+#### 10.3 修复
+
+Binary 分支与 Text 分支一致：写入 `messageBuffer`，`EndOfMessage` 后取完整帧交给 `HandleBinaryMessage(byte[] frame)` 解析。重新部署 WS 节点（192.168.1.4）后重传 image-5.png，密文恢复 95827、公开访问 200 正常。
+
+#### 10.4 教训
+
+WebSocket 接收循环必须处理分片：当接收缓冲区小于单帧大小时 `ReceiveAsync` 只返回部分数据（`EndOfMessage=false`），必须累积到消息完整再解析，Text / Binary 两种消息类型处理要一致。
+
 ## 关联文档
 
 - [01-architecture.md](01-architecture.md) — 架构总览
