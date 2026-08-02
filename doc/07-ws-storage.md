@@ -73,6 +73,8 @@
 
 `chunkIndex` 从 0 开始；`totalChunks = -1` 表示总分块数未知（流式传输场景）。
 
+> **接收注意事项**：帧最大可达 `HeaderSize + MaxPayloadSize`。接收端 `ReceiveAsync` 的缓冲区若小于单帧大小（如 64KB 缓冲区接收 64KB 载荷 + 24B 帧头 = 65560B 的帧），`ReceiveAsync` 只返回部分数据且 `EndOfMessage=false`——**必须累积到 `EndOfMessage` 后再 `ParseFrame`**（Text 帧同理），否则跨缓冲区边界的帧尾部被截断（曾导致分块上传确定性丢失 24 字节、解密 `tag mismatch`，详见 [12-bug-tracker.md](12-bug-tracker.md) Bug #7）。
+
 ---
 
 ## 消息类型定义
