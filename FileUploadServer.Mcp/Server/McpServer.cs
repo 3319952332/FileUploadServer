@@ -16,7 +16,7 @@ public sealed class McpServer
     private static readonly HashSet<string> SupportedProtocolVersions = new(StringComparer.Ordinal)
     {
         "0.1.0", "1.0",
-        "2024-11-05", "2025-03-26", "2025-06-18", "2026-03-26",
+        "2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-03-26",
     };
 
     private readonly FileToolHandlers _handlers;
