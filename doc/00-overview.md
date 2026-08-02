@@ -30,11 +30,11 @@
 - 密钥轮换后台任务，支持历史密钥解密
 - 对用户完全透明：上传自动加密，下载自动解密
 
-### 🌐 公共访问路径（当前已屏蔽，待整改）
+### 🌐 公共访问路径（已启用）
 - 配置特定路径前缀（如 `/public/*`），匿名用户无需 API Key 即可访问
 - 多层限流保护（IP 维度 + 文件维度 + 并发数）
 - IP 白名单/黑名单、ETag/304 缓存支持
-- ⚠️ **2026-08-02 起已屏蔽**，WS 存储的加密文件经 `/p/` 访问解密失败，且违背"访问统一走 API"架构，详见 [06-public-access.md](06-public-access.md)
+- ✅ 已重新启用：经 `FileDownloadService` 统一「读取 + 解密」，网页 / API / 公共访问三入口解密一致，详见 [06-public-access.md](06-public-access.md)
 
 ### 🔗 分布式 WebSocket 存储
 - 网关负责认证/路由，WS 客户端负责实际文件存储
@@ -78,7 +78,7 @@ FileUploadServer/
 │   ├── 03-permission.md          # 分级权限细案
 │   ├── 04-encryption.md          # 文件加密细案
 │   ├── 05-key-management.md      # 密钥生命周期细案
-│   ├── 06-public-access.md       # 公共访问细案（已屏蔽）
+│   ├── 06-public-access.md       # 公共访问细案
 │   ├── 07-ws-storage.md          # WS 分布式存储细案
 │   ├── 08-mcp.md                 # MCP 接口细案
 │   ├── 09-rate-limit.md          # 限流与安全细案
@@ -98,7 +98,7 @@ FileUploadServer/
 │   └── Repositories/             # FileItemRepository, FileLocationRepository
 ├── FileUploadServer.Web/         # Web API 网关（认证 / 路由 / 元数据）
 │   ├── Controllers/              # FileApi, Admin, WsClientAdmin
-│   ├── Middleware/               # ApiKeyAuth, PublicFile(已屏蔽), WebSocketHandler
+│   ├── Middleware/               # ApiKeyAuth, PublicFile, WebSocketHandler
 │   ├── MessageHandlers/          # Upload/Download/Delete/List/PingPong
 │   └── Services/                 # WsConnectionManager, ClientRouter, KeyRotation 等
 ├── FileUploadServer.WsClient/    # WS 存储节点客户端（独立部署）
@@ -171,7 +171,7 @@ DELETE /api/admin/keys/cleanup # 清理过期密钥
 
 ### 公共访问
 ```
-GET    /p/{path}               # 匿名访问公共文件（中间件已屏蔽）
+GET    /p/{path}               # 匿名访问公共文件（中间件已启用）
 PUT    /api/admin/files/{id}/public  # 设置文件公开
 GET    /api/admin/files/public       # 公共文件列表
 GET    /api/admin/stats/public-access # 统计
@@ -235,7 +235,7 @@ POST   /api/public/keys        # 申请临时密钥（需 IP 白名单）
 | [03-permission.md](03-permission.md) | 分级权限细案 |
 | [04-encryption.md](04-encryption.md) | 文件加密细案 |
 | [05-key-management.md](05-key-management.md) | 密钥生命周期细案 |
-| [06-public-access.md](06-public-access.md) | 公共访问细案（已屏蔽待整改） |
+| [06-public-access.md](06-public-access.md) | 公共访问细案 |
 | [07-ws-storage.md](07-ws-storage.md) | WS 分布式存储细案 |
 | [08-mcp.md](08-mcp.md) | MCP 接口细案 |
 | [09-rate-limit.md](09-rate-limit.md) | 限流与安全细案 |

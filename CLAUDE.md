@@ -15,7 +15,7 @@
 | [doc/03-permission.md](doc/03-permission.md) | 分级权限细案（Admin/Temporary Key） | 涉及权限 / 密钥 |
 | [doc/04-encryption.md](doc/04-encryption.md) | 文件存储加密细案（AES-256-GCM） | 涉及加解密 |
 | [doc/05-key-management.md](doc/05-key-management.md) | 密钥生命周期细案（轮换 / 恢复口令） | 涉及密钥管理 |
-| [doc/06-public-access.md](doc/06-public-access.md) | 公共访问细案（当前已屏蔽待整改） | 涉及 /p/ 匿名访问 |
+| [doc/06-public-access.md](doc/06-public-access.md) | 公共访问细案（已启用） | 涉及 /p/ 匿名访问 |
 | [doc/07-ws-storage.md](doc/07-ws-storage.md) | WS 分布式存储细案（网关 + 存储节点） | 涉及 WS 节点 / 存储 |
 | [doc/08-mcp.md](doc/08-mcp.md) | MCP 接口细案（6 个工具） | 涉及 MCP 工具 |
 | [doc/09-rate-limit.md](doc/09-rate-limit.md) | 限流与安全细案 | 涉及限流 / 安全 |

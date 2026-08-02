@@ -68,7 +68,7 @@ graph TB
     end
 
     subgraph Web[FileUploadServer.Web 网关]
-        MID[Middleware<br/>ApiKeyAuth/WebSocketHandler/PublicFile屏蔽]
+        MID[Middleware<br/>ApiKeyAuth/WebSocketHandler/PublicFile]
         CTRL[Controllers<br/>FileApi/Admin/WsClientAdmin]
         MH[MessageHandlers<br/>Upload/Download/Delete/List/PingPong]
         SVCS[Services<br/>WsConnectionManager/ClientRouter/KeyRotation/...]
@@ -110,7 +110,7 @@ graph TB
    ▼
 ⑤ RateLimiter (内置固定窗口)                      —— public-file-ip: 100/min, 队列10
    ▼
-⑥ [PublicFileMiddleware — 已屏蔽 2026-08-02]       —— /p/ 匿名访问，注释停用
+⑥ PublicFileMiddleware                       —— /p/ 匿名访问，统一 FileDownloadService 读取+解密
    ▼
 ⑦ UseWebSockets (KeepAliveInterval=30s)
    ▼

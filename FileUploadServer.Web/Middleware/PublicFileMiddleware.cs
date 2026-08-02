@@ -13,13 +13,15 @@ namespace FileUploadServer.Web.Middleware;
 
 /// <summary>
 /// 公共文件访问中间件
-/// <para>处理 /p/{*filePath} 路径的匿名文件访问请求，实现完整的 12 步处理流程。</para>
+/// <para>处理 /p/{*filePath} 路径的匿名文件访问请求：路径校验 → 模式匹配 → IP 白/黑名单 →
+/// 三层限流 → 查 FileItem → 大小限制 → 统一读取 + 透明解密 → 设置响应头 → ETag/304 → 流式返回。</para>
 /// </summary>
 /// <remarks>
-/// ⛔ 2026-08-02 已由 Program.cs 屏蔽（未注册），问题待整改：
-/// 1. Step 8.5 WS 存储分支对加密文件服务端解密失败（老密文 tag mismatch → 503）；
-/// 2. 中间件直接连 WS 节点违背"访问统一走 API"的分层架构。
-/// 整改方向：公开访问统一走 FileApiController.Download 封装，或公开文件限定本地磁盘。
+/// ✅ 2026-08-02 已重新启用（Program.cs 中 <c>UseMiddleware&lt;PublicFileMiddleware&gt;()</c>）。
+/// 此前曾因「WS 加密文件解密失败 + 中间件直连 WS 节点违背分层架构」而屏蔽，后通过共享
+/// <see cref="FileUploadServer.Web.Services.FileDownloadService"/> 统一「读取（WS/本地）+ 透明解密」逻辑修复：
+/// 中间件删除 WS 直连分支，与网页 / API 下载共用同一解密实现（提交 8faadd5）。
+/// 老文件（7-11 及 8-02 上传）用已丢失密钥加密，tag mismatch 属数据层问题，需重新上传。
 /// </remarks>
 public class PublicFileMiddleware
 {

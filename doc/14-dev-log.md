@@ -219,6 +219,20 @@ Binary 分支与 Text 分支一致：写入 `messageBuffer`，`EndOfMessage` 后
 
 WebSocket 接收循环必须处理分片：当接收缓冲区小于单帧大小时 `ReceiveAsync` 只返回部分数据（`EndOfMessage=false`），必须累积到消息完整再解析，Text / Binary 两种消息类型处理要一致。
 
+### 十一、公开访问与文档对齐（Bug：公开访问与文档不符）
+
+**问题**：提交 `8faadd5` 重新启用 `/p/` 公开访问后，多份文档与代码仍停留在「已屏蔽」状态：
+- `00-overview` / `01-architecture` / `02-api-reference` / `03-permission` / `04-encryption` / `09-rate-limit` / `11-deployment` 多处描述「/p/ 已屏蔽」
+- `PublicFileMiddleware.cs` 顶部 `<remarks>` 注释仍写「⛔ 已由 Program.cs 屏蔽（未注册）」
+- `06-public-access` 第 2-6 节残留「原始 12 步流程」「WS 直连分支不可达」「返回密文」等过时描述
+
+**修复**：
+1. `PublicFileMiddleware.cs` 顶部注释改为「✅ 已重新启用」，说明统一走 `FileDownloadService` 读取 + 解密
+2. 重写 `doc/06-public-access.md` 至当前实现（处理流程、统一读取 + 解密、遗留问题、端点清单）
+3. 同步 7 份文档「已屏蔽」→「已启用」，并更正 `ApiKeyAuthMiddleware` `/p/` 跳过 bug 已修复、ETag 前缀长度 `[0..16]` 描述
+
+**验证**：全局 grep 复查，仅历史日志 / MCP 错误码保留「屏蔽/不可达」字样，无现状描述残留。
+
 ## 关联文档
 
 - [01-architecture.md](01-architecture.md) — 架构总览

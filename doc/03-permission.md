@@ -70,7 +70,7 @@ public bool IsValid()
 |---|---|
 | `/api/admin` | Admin 接口（内部通过 `IsLocalRequest()` 做 localhost 限制，见第 7 节） |
 | `/api/public` | 公网接口（如申请临时密钥，见第 6 节） |
-| `/p/` | 公共文件访问路径（由 `PublicFileMiddleware` 处理，但已于 2026-08-02 屏蔽，见 [06-public-access.md](06-public-access.md)） |
+| `/p/` | 公共文件访问路径（由 `PublicFileMiddleware` 处理，匿名访问，见 [06-public-access.md](06-public-access.md)） |
 
 ```csharp
 if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase) ||
@@ -82,7 +82,7 @@ if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.Ordin
 }
 ```
 
-> 已知问题：`StartsWithSegments("/p/")` 在实际运行时可能对 `/p/public/...` 返回 false（见 DEV_LOG 踩坑记录），此为已知 bug，待整改。
+> 已知问题（已修复）：`StartsWithSegments("/p/")` 曾对 `/p/public/...` 返回 false（见 DEV_LOG 踩坑记录），已于提交 `8faadd5` 改为 `StartsWithSegments("/p")` 修复。
 
 ### 3.2 Key 提取与校验
 
@@ -262,7 +262,7 @@ if (expireMinutes <= 0 || expireMinutes > 1440)
 | 设置文件公开 (`PUT /api/admin/files/{id}/public`) | 可以 | 禁止 | 401 | 需要 Admin Key + API 鉴权 |
 | 创建密钥 (`POST /api/admin/keys`) | — | — | — | localhost only，无需 Key |
 | 公网申请 Temp Key (`POST /api/public/keys`) | — | — | 可以（需 IP 白名单） | 无需 Key，需 IP 白名单 |
-| 公共文件访问 (`/p/*`) | — | — | 可以（已屏蔽） | 2026-08-02 屏蔽，见 [06-public-access.md](06-public-access.md) |
+| 公共文件访问 (`/p/*`) | — | — | 可以（无需 Key） | 中间件已启用，见 [06-public-access.md](06-public-access.md) |
 
 ---
 
@@ -286,4 +286,4 @@ if (expireMinutes <= 0 || expireMinutes > 1440)
 
 - [01-architecture.md](01-architecture.md) -- 中间件管线、DI 注册清单
 - [04-encryption.md](04-encryption.md) -- 透明加密实现，PermissionService 对加密无感知
-- [06-public-access.md](06-public-access.md) -- `/p/` 路径的公共访问（当前已屏蔽）
+- [06-public-access.md](06-public-access.md) -- `/p/` 路径的公共访问（已启用）

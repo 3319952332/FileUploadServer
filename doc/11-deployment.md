@@ -509,17 +509,17 @@ curl -s "https://file.sub.opengm.top/api/files?key=<ADMIN_KEY>" | head -c 200
 
 ## 9. 已知部署问题
 
-### 9.1 公开文件访问（/p/）已屏蔽
+### 9.1 公开文件访问（/p/）已启用
 
 - **时间**：2026-08-02
-- **状态**：`PublicFileMiddleware` 未注册，`/p/` 路径返回 401/404
-- **根因**：WS 存储加密文件经 `/p/` 访问时服务端解密失败（AesGcmDecryptStream tag mismatch）；中间件直接连 WS 节点违背「所有文件访问统一走 API」的分层架构
-- **整改方向**：公开访问统一走 `FileApiController.Download` 封装，或公开文件限定本地磁盘存储
+- **状态**：`PublicFileMiddleware` 已注册启用，`/p/` 路径匿名访问正常
+- **修复**：新建 `FileDownloadService` 统一「读取（WS/本地）+ 透明解密」，中间件删除 WS 直连分支，网页 / API / 公共访问三入口解密一致（提交 `8faadd5`）
+- **注意**：历史老文件用已丢失密钥加密，tag mismatch 需重新上传（见 [06-public-access.md](06-public-access.md)）
 
 ### 9.2 `ApiKeyAuthMiddleware` 的 `/p/` 放行 bug
 
 - `StartsWithSegments("/p/")` 实测对 `/p/public/...` 返回 `False`
-- 该 bug 此前被 `PublicFileMiddleware` 屏蔽前掩盖
+- 该 bug 此前被 `PublicFileMiddleware` 处理 `/p/` 路径所掩盖
 - 修复方案：改为 `StartsWithSegments("/p")`
 
 ### 9.3 `pkill -f` 误杀 SSH 会话

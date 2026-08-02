@@ -294,7 +294,7 @@ Read(buffer, offset, count):
 ## 8. 已知问题
 
 1. **LocalStorageStrategy 加密集成未完成**：`ReadAsync`/`WriteAsync` 中加密流包装代码被注释（TODO Phase 1.5），当前加密逻辑可能走其他代码路径（如 `FileApiController` 或 `KeyRotationService` 中直接使用加密流）
-2. **WS 加密文件公开访问 tag mismatch**：老文件（7 月 11 日前上传）使用旧密钥加密，当前密钥无法解密 → 需用户重新上传。该问题导致 `PublicFileMiddleware` 于 2026-08-02 被屏蔽（见 [06-public-access.md](06-public-access.md)）
+2. **WS 加密文件公开访问 tag mismatch**：老文件（7 月 11 日前上传）使用已丢失密钥加密，当前密钥无法解密 → 需用户重新上传。公开访问已通过 `FileDownloadService` 统一解密修复（见 [06-public-access.md](06-public-access.md)），此问题仅剩数据层老文件
 3. **Seek 不支持反向**：`AesGcmDecryptStream.Seek` 只能前向跳块，反向跳转需从头重新定位，大文件场景可能影响性能
 
 ---

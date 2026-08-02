@@ -41,7 +41,7 @@
 └─────────────────────────────────────────────────┘
 ```
 
-> 注意：第 2 层 PublicFileRateLimiter 目前因 PublicFileMiddleware 被屏蔽（参见 [01-architecture.md](01-architecture.md) 中间件管线说明），实际未对请求生效。一旦 `/p/` 路径恢复，即刻启用。第 1 层 ASP.NET Core 内置限流始终生效。
+> 说明：第 2 层 PublicFileRateLimiter 由 `PublicFileMiddleware` 对 `/p/` 路径调用，中间件已启用，该层限流对公共访问生效。第 1 层 ASP.NET Core 内置限流始终生效。
 
 ---
 
@@ -279,4 +279,4 @@ public class PublicPathOptions
 
 - [01-architecture.md](01-architecture.md) — 中间件管线（RateLimiter 位置）+ DI 注册清单
 - [03-permission.md](03-permission.md) — API Key 权限体系
-- [06-public-access.md](06-public-access.md) — 公共文件访问机制（`/p/` 路径，当前已屏蔽）
+- [06-public-access.md](06-public-access.md) — 公共文件访问机制（`/p/` 路径，已启用）

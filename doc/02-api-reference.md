@@ -26,7 +26,7 @@
 以下路径**跳过中间件、自行鉴权**：
 - `/api/admin/*` — 控制器内 `IsLocalRequest()` 检测（仅允许 127.0.0.1 和 ::1）
 - `/api/public/*` — `PublicKeysController` 自行做 IP 白名单检查
-- `/p/*` — 原由 `PublicFileMiddleware` 处理（当前已屏蔽，见 [11-deployment.md](11-deployment.md) 已知问题）
+- `/p/*` — 由 `PublicFileMiddleware` 处理（匿名访问，已启用，见 [06-public-access.md](06-public-access.md)）
 
 ### 1.2 密钥类型
 
@@ -185,7 +185,7 @@
 - **方法**：`GetPublicFileList()`
 - **成功响应** `200`：匿名文件列表，每个元素含 `id`、`fileName`、`fileSize`、`contentType`、`publicPath`、`url`（`/p{publicPath}`）
 - **权限**：无需认证，但需通过 IP 白名单/限流（由外部中间件控制）
-- **注意**：当前 `/p/` 公开访问已屏蔽（2026-08-02），此端点返回的 URL 可能不可用
+- **注意**：`/p/` 公开访问已启用（中间件 + `FileDownloadService` 统一解密），此端点返回的 URL 可直接匿名访问
 
 ---
 

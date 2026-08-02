@@ -1,37 +1,37 @@
 # 公共访问细案
 
-> 用途：说明公共文件访问路径 `/p/*` 的配置、中间件处理流程、三层限流机制，以及当前屏蔽状态与整改方向。
+> 用途：说明公共文件访问路径 `/p/*` 的配置、中间件处理流程、三层限流机制，以及加密文件统一解密实现。
 > 创建：2026-08-02 | 关联：[03-permission.md](03-permission.md) / [04-encryption.md](04-encryption.md) / [01-architecture.md](01-architecture.md)
 
 ## 目录
 
-1. [⚠️ 重要现状：功能已屏蔽](#️-重要现状功能已屏蔽)
+1. [✅ 现状：功能已启用](#现状功能已启用)
 2. [PublicPathOptions：公共访问配置](#publicpathoptions公共访问配置)
-3. [PublicFileMiddleware：12 步处理流程](#publicfilemiddleware12-步处理流程)
+3. [PublicFileMiddleware：处理流程](#publicfilemiddleware处理流程)
 4. [三层限流：PublicFileRateLimiter](#三层限流publicfileratelimiter)
-5. [WS 存储分支（Step 8.5）](#ws-存储分支step-85)
-6. [本地磁盘分支（Step 9-12）](#本地磁盘分支step-9-12)
-7. [屏蔽原因与整改方向](#屏蔽原因与整改方向)
+5. [统一读取 + 透明解密：FileDownloadService](#统一读取--透明解密filedownloadservice)
+6. [遗留问题](#遗留问题)
+7. [修复记录（提交 8faadd5）](#修复记录提交-8faadd5)
 8. [关键类/文件](#关键类文件)
 9. [关联文档](#关联文档)
 
 ---
 
-## 1. ✅ 现状：功能已修复并重新启用
+## 1. ✅ 现状：功能已启用
 
-**`PublicFileMiddleware` 已重新启用**（`Program.cs` 中 `app.UseMiddleware<PublicFileMiddleware>();`），通过共享 `FileDownloadService` 统一了「读取（WS/本地）+ 透明解密」逻辑，网页 / API / 公共访问三入口解密一致。
+**`PublicFileMiddleware` 已注册启用**（`Program.cs:196` `app.UseMiddleware<PublicFileMiddleware>();`），位于 `ApiKeyAuthMiddleware` 之前、`RateLimiter` 之后，匿名用户无需 API Key 即可访问 `/p/{path}`。
+
+通过共享 `FileDownloadService` 统一了「读取（WS 远程 / 本地磁盘）+ 透明解密」逻辑，网页下载 / API 下载 / 公共访问**三个入口解密行为一致**。
 
 **修复内容**（提交 `8faadd5`）：
-1. 删除中间件内 WS 直连分支（Step 8.5），统一走 `FileDownloadService`（支持 WS + 本地 + 解密）
-2. 本地分支（Step 12）补上透明解密（修复返回密文问题）
+1. 删除中间件内 WS 直连分支，统一走 `FileDownloadService`（支持 WS + 本地 + 解密）
+2. 本地分支补上透明解密（修复返回密文问题）
 3. 修复 `ApiKeyAuthMiddleware` 的 `/p/` 跳过 bug（`StartsWithSegments("/p/")` → `"/p"`）
 4. 重新启用中间件
 
 **测试**：`/p/public/hello.txt` 明文返回；新上传文件三入口返回相同明文。
 
-> 历史遗留：部分老文件（7-11 及 8-02 上传）用已丢失密钥加密，当前密钥无法解密（tag mismatch），属数据层问题，需重新上传。
-
-> 以下第 2-6 节描述 `PublicFileMiddleware` 的原始设计（12 步流程、限流等），中间件当前已启用，以下内容供实现细节参考。
+> 历史遗留：部分老文件（7-11 及 8-02 上传）用已丢失密钥加密，当前密钥无法解密（tag mismatch），属数据层问题，需重新上传，详见第 6 节。
 
 ---
 
@@ -60,7 +60,7 @@
 
 ### 2.3 IP 匹配规则
 
-`IsIpMatch()` 支持 `*` 通配符（如 `192.168.*` 匹配 `192.168.0.1`），使用预编译的正则表达式：
+`IsIpAllowed()` 支持 `*` 通配符（如 `192.168.*` 匹配 `192.168.0.1`），使用预编译的正则表达式：
 
 ```csharp
 // 正则模式缓存到 ConcurrentDictionary 中，避免重复编译
@@ -77,20 +77,23 @@ var regex = IpPatternCache.GetOrAdd(pattern, p =>
 
 ---
 
-## 3. PublicFileMiddleware：12 步处理流程
+## 3. PublicFileMiddleware：处理流程
 
-中间件代码保留在 `Web/Middleware/PublicFileMiddleware.cs`，以下为其原始 12 步处理流程（代码保留但当前不可达）：
+中间件源码：`Web/Middleware/PublicFileMiddleware.cs`。以下为当前实际处理流程（对照源码逐段核对）。
 
-### Step 1: 路径验证
-检查请求路径是否以 `/p/` 开头。不是则调用 `_next(context)` 跳过。
+### Step 1: 路径前缀验证
+
+检查请求路径是否以 `/p/` 开头（`OrdinalIgnoreCase`）。不是则调用 `_next(context)` 跳过。
 
 ### Step 2: 提取文件路径
+
 移除 `/p/` 前缀，从 `/p/public/a.jpg` 提取为 `public/a.jpg`：
 ```csharp
 var filePath = requestPath.AsSpan(3).ToString();
 ```
 
 ### Step 3: 路径安全检查（IsPathSafe）
+
 - 拒绝空路径和根路径 `/`
 - 拒绝包含 `..` 的路径遍历（排除合法的 `/.../` 省略号路径）
 - 拒绝包含空字节 `\0`
@@ -98,16 +101,20 @@ var filePath = requestPath.AsSpan(3).ToString();
 - 拒绝以 `/` 或 `\` 开头的路径
 
 ### Step 4: PathMatcher 匹配
+
 `PathMatcher.MatchesAnyPattern(filePath, opts.Patterns)` 检查文件路径是否匹配配置的公共路径模式（支持 `*` 和 `**` 通配）。
 
 ### Step 5: IP 白名单/黑名单检查
+
 - 获取客户端真实 IP：优先 `X-Forwarded-For` 头（逗号分隔取第一个），回退 `RemoteIpAddress`
 - `IsIpAllowed()`：先检查 DenyList，再检查 AllowList（非空时）
 
 ### Step 6: 限流检查
-`rateLimiter.TryAcquire(remoteIp, filePath)` -- 三层限流（见第 4 节）。
+
+`rateLimiter.TryAcquire(remoteIp, filePath)` —— 三层限流（见第 4 节）。无论成功或异常，`finally` 中调用 `rateLimiter.Release()` 释放并发槽位。
 
 ### Step 7: 查找 FileItem
+
 ```csharp
 var fileItem = await dbContext.Files
     .Where(f => f.IsPublic && f.PublicPath != null && f.PublicPath == filePath)
@@ -116,39 +123,45 @@ var fileItem = await dbContext.Files
 ```
 
 ### Step 8: 检查文件大小限制
+
 `fileItem.FileSize > opts.MaxFileSize` → 413 Request Entity Too Large。
 
-### Step 8.5: WS 存储分支
-如果 `StorageMode == "WebSocket"` → 进入 WS 读取流程（见第 5 节）。
+### Step 9: 统一读取 + 透明解密
 
-### Step 9: 打开文件流（本地磁盘）
 ```csharp
-var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
+var downloadService = context.RequestServices.GetRequiredService<FileDownloadService>();
+fileStream = await downloadService.OpenDecryptedStreamAsync(fileItem);
 ```
-文件不存在 → 404。
+- 本地文件不存在 → `FileNotFoundException` → 404
+- 其他异常（WS 客户端不可用 / 读取超时等）→ 503 Storage node temporarily unavailable
+
+> 原中间件「Step 8.5 WS 直连分支」已删除，WS / 本地读取统一走 `FileDownloadService`（见第 5 节）。
 
 ### Step 10: 设置响应头
+
 - `Content-Type`: `fileItem.ContentType` 或默认 `application/octet-stream`
 - `Content-Disposition`: 可预览类型（`text/`, `image/`, `audio/`, `video/`, `application/pdf`, `application/json`, `application/xml`）使用 `inline`，其余使用 `attachment`
 - `Cache-Control`: `opts.CacheControl`（默认 `public,max-age=604800`）
-- `ETag`: `SHA256(storedFileName-fileSize-uploadTicks)[0..8].hex`，格式 `"xxxxxxxxxxxxxxxx"`
+- `ETag`: `SHA256(storedFileName-fileSize-uploadTicks)[0..16].hex`，格式 `"xxxxxxxxxxxxxxxx"`（带引号）
 - `Last-Modified`: `fileItem.UploadedAt.ToString("R")`
-- `Content-Length`: `fileItem.FileSize`
+- `Content-Length`: `fileItem.FileSize`（解密后明文大小）
 - `X-Content-Type-Options`: `nosniff`
 
 ### Step 11: 条件请求检查
+
 `If-None-Match` 与 ETag 匹配时返回 304 Not Modified（清除 Content-Type、Content-Disposition、Content-Length 头）。
 
 ### Step 12: 流式返回
-`FileStream` 以 64KB 缓冲区 + `useAsync:true` 打开，`CopyToAsync(context.Response.Body)`。
 
-> 源码：`FileUploadServer.Web/Middleware/PublicFileMiddleware.cs:49-354`
+`fileStream.CopyToAsync(context.Response.Body)`，`await using` 确保流（含解密流）被释放。
+
+> 源码：`FileUploadServer.Web/Middleware/PublicFileMiddleware.cs:1-403`
 
 ---
 
 ## 4. 三层限流：PublicFileRateLimiter
 
-`PublicFileRateLimiter`（`Web/Services/PublicFileRateLimiter.cs`）实现 `IPublicFileRateLimiter` 接口，提供三层限流：
+`PublicFileRateLimiter`（`Web/Services/PublicFileRateLimiter.cs`）实现 `IPublicFileRateLimiter` 接口，提供三层限流。中间件启用后即对 `/p/` 请求生效。
 
 ### 第一层：并发控制（SemaphoreSlim）
 ```csharp
@@ -181,7 +194,7 @@ var fileBucket = _fileBuckets.GetOrAdd(filePath,
 ### RateBucket 实现细节
 
 ```csharp
-// 滑动窗口：队首记录最老的时间戳
+// 滑动窗口：队首记录最老的时间戳（内部用 lock 保证线程安全）
 public bool TryConsume()
 {
     var cutoff = now - _window;
@@ -198,37 +211,52 @@ public bool TryConsume()
 
 ---
 
-## 5. WS 存储分支（Step 8.5）
+## 5. 统一读取 + 透明解密：FileDownloadService
 
-当 `FileItem.StorageMode == "WebSocket"` 时，中间件进入远程读取分支（代码保留在 `PublicFileMiddleware.cs:164-257`，当前不可达）：
+`Web/Services/FileDownloadService.cs` 为共享下载服务，统一「读取文件流 + 透明解密」，供网页下载（`Download.cshtml`）、API 下载（`FileApiController.Download`）、公共访问（`PublicFileMiddleware`）三处共用，杜绝解密逻辑分叉。
 
-1. 获取 `WsStorageStrategy` 和 `WsConnectionManager`
-2. 检查 WS 客户端是否在线：`connectionManager.TryPickClientForPath(storagePath, out _)` -- 不在线返回 503
-3. 通过 `strategy.ReadAsync(storagePath)` 读取文件流
-4. 如果 `fileItem.EncryptionVersion > 0`：尝试用 `AesGcmDecryptStream` 解密
-5. 将整个文件读取到内存（`MemoryStream`）
-6. 设置响应头 + ETag + 条件请求检查（304）
-7. `context.Response.Body.WriteAsync(wsData)`
+### 5.1 读取逻辑
 
-### 已知问题
+```csharp
+if (file.StorageMode == "WebSocket" && !string.IsNullOrEmpty(file.ClientId))
+    rawStream = await wsStrategy.ReadAsync(remotePath);   // WS 远程节点
+else
+    rawStream = new FileStream(localPath, ...);            // 本地磁盘
+```
 
-**WS 加密文件解密失败**：`AesGcmDecryptStream` 在 Step 8.5 中抛 `CryptographicException: authentication tag mismatch`。根因是部分老文件（7 月 11 日前上传）使用旧密钥加密，与当前 `KeyProvider` 的主密钥不匹配。
+- WS 分支经 `WsStorageStrategy` 读取（`StoragePath` 或 `FileName` 作为远程路径）
+- 本地分支路径由 `ResolveDiskPath` 解析：
+  - **加密文件**（`EncryptionVersion > 0`）实际存储在 `uploads/{DiskFileName[..2]}/{DiskFileName}` 子目录 + 哈希命名
+  - **明文文件**使用 `StoredFileName`（GUID 命名）
 
-> 详见 [14-dev-log.md](14-dev-log.md) "公开访问排查" 章节与 [12-bug-tracker.md](12-bug-tracker.md)。
+### 5.2 解密逻辑
+
+```csharp
+if (file.EncryptionVersion > 0 && keyProvider != null &&
+    keyProvider.SupportsKeyVersion(file.KeyVersion))
+    return new AesGcmDecryptStream(rawStream, keyProvider);
+return rawStream;  // 加密未初始化 / 密钥版本不支持时降级明文
+```
+
+- 加密文件透明解密为明文流，响应 `Content-Length` 即明文大小
+- 历史老文件用已丢失密钥加密，`SupportsKeyVersion` 不通过或解密时 tag mismatch → 需重新上传（见第 6 节）
+
+### 5.3 异常契约
+
+| 异常 | 中间件响应 |
+|---|---|
+| `FileNotFoundException`（本地文件不存在） | 404 |
+| `InvalidOperationException`（WS 客户端不可用） | 503 |
+| `TimeoutException`（WS 读取超时） | 503 |
+
+> 源码：`FileUploadServer.Web/Services/FileDownloadService.cs:1-100`
 
 ---
 
-## 6. 本地磁盘分支（Step 9-12）
+## 6. 遗留问题
 
-本地磁盘文件路径查找逻辑：
-
-```csharp
-var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
-```
-
-仅使用 `StoredFileName` 字段（GUID 命名的文件名），不支持子目录格式。需要在 `uploadsPath`（默认为 `wwwroot/uploads`）下能找到该文件。
-
-> 注意：`PublicFileMiddleware` 中 Step 12 的流式返回部分有加密流的 TODO 注释（`PublicFileMiddleware.cs:334-346`），标记 `EncryptionVersion > 0` 时应用 `AesGcmDecryptStream` 包装，但当前实现直接返回原始文件流（即返回密文，不对公共访问做解密）。
+1. **老文件密钥丢失无法解密**：历史文件（7-11 前上传的 `p.txt`/`d.txt`/`fresh.txt`/`Markdown入门.md`、8-02 上传的 `new_public.txt` 与 8 张图片等）用已丢失密钥加密，当前密钥无法解密（`Authentication tag mismatch`）→ 需用户提供原文件重新上传。此问题对网页 / API / 公共访问三入口一致存在。
+2. **前端解密不适用公共访问**：API 下载返回密文（前端解密）是既有设计，但公共访问 `/p/` 是浏览器直连，必须服务端解密 —— 已由 `FileDownloadService` 统一处理。
 
 ---
 
@@ -242,16 +270,15 @@ var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
 | 中间件直连 WS 节点违背分层架构 | 删除 Step 8.5 直连分支，改走共享 `FileDownloadService`（支持 WS + 本地） |
 | `ApiKeyAuthMiddleware:27` `/p/` 跳过 bug | `StartsWithSegments("/p/")` → `StartsWithSegments("/p")` |
 
-### 7.2 遗留问题
+### 7.2 2026-08-02 文档与代码对齐
 
-老文件（p.txt/d.txt/fresh.txt/Markdown入门.md、8-02 上传的 new_public.txt 与 8 张图片等）密文无法解密（密钥已丢失）→ 需用户提供原文件重新上传。
+此前多份文档（`00-overview`/`01-architecture`/`02-api-reference`/`03-permission`/`04-encryption`/`09-rate-limit`/`11-deployment`）仍描述公开访问「已屏蔽」，与已启用的代码不符。本次已统一改为「已启用」并同步中间件顶部过时注释。
 
-### 7.3 当前可用的公共文件查询
-
-即使 `PublicFileMiddleware` 被屏蔽，以下端点仍可用：
+### 7.3 当前可用的公共文件端点
 
 | 端点 | 说明 |
 |---|---|
+| `GET /p/{path}` | 匿名访问公开文件（中间件已启用，走 FileDownloadService） |
 | `GET /api/public/files` | 列出所有公开文件（无需认证） |
 | `PUT /api/admin/files/{id}/public` | 设置/取消文件公开（需 Admin Key） |
 | `GET /api/admin/files/public` | 分页查询公开文件（localhost） |
@@ -268,8 +295,9 @@ var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
 | `PublicFileMiddleware` | `FileUploadServer.Web/Middleware/PublicFileMiddleware.cs` |
 | `PublicFileRateLimiter` | `FileUploadServer.Web/Services/PublicFileRateLimiter.cs` |
 | `IPublicFileRateLimiter` | `FileUploadServer.Web/Services/PublicFileRateLimiter.cs` |
+| `FileDownloadService` | `FileUploadServer.Web/Services/FileDownloadService.cs` |
 | `PathMatcher` | `FileUploadServer.Core/Services/PathMatcher.cs` |
-| `Program.cs`（屏蔽处） | `FileUploadServer.Web/Program.cs:188-198` |
+| `Program.cs`（启用处） | `FileUploadServer.Web/Program.cs:196` |
 | `ApiKeyAuthMiddleware`（`/p/` 跳过） | `FileUploadServer.Web/Middleware/ApiKeyAuthMiddleware.cs:27` |
 
 ---
@@ -279,6 +307,7 @@ var physicalPath = Path.Combine(uploadsPath, fileItem.StoredFileName);
 - [03-permission.md](03-permission.md) -- API Key 鉴权流程，`/p/` 路径被中间件跳过鉴权
 - [04-encryption.md](04-encryption.md) -- 加密文件解密原理，tag mismatch 根因分析
 - [05-key-management.md](05-key-management.md) -- 密钥版本与历史密钥机制
-- [01-architecture.md](01-architecture.md) -- 中间件管线顺序（PublicFileMiddleware 原应在 ApiKeyAuthMiddleware 之前）
-- [14-dev-log.md](14-dev-log.md) -- 开发日志（公开访问排查记录）
+- [01-architecture.md](01-architecture.md) -- 中间件管线顺序（PublicFileMiddleware 位于 ApiKeyAuthMiddleware 之前）
+- [09-rate-limit.md](09-rate-limit.md) -- 限流体系（PublicFileRateLimiter 对 `/p/` 生效）
+- [14-dev-log.md](14-dev-log.md) -- 开发日志（公开访问排查、统一解密记录）
 - [12-bug-tracker.md](12-bug-tracker.md) -- 踩坑记录
