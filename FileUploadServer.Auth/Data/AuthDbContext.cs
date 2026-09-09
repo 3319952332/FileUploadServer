@@ -41,6 +41,7 @@ public class AuthDbContext : DbContext
             e.ToTable("AuthAccountKeys");
             e.HasIndex(x => x.UserId).IsUnique();
             e.Property(x => x.FileKey).HasMaxLength(128);
+            e.Property(x => x.KeyType).HasMaxLength(16);
             e.HasOne<AuthUser>().WithMany().HasForeignKey(x => x.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
         });

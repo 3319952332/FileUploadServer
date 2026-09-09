@@ -17,17 +17,17 @@ public class FileServerAdminClient
         _logger = logger;
     }
 
-    /// <summary>在文件服创建 User 类型密钥，返回 (key, keyId)</summary>
-    public async Task<(string Key, int KeyId)> CreateUserKeyAsync(string username, int expireMinutes)
+    /// <summary>在文件服创建账号密钥（User/Admin），返回 (key, keyId)</summary>
+    public async Task<(string Key, int KeyId)> CreateUserKeyAsync(string username, string keyType, int expireMinutes)
     {
-        var url = $"{BaseUrl}/api/admin/keys?keyType=User&expireMinutes={expireMinutes}&description={Uri.EscapeDataString("account:" + username)}";
+        var url = $"{BaseUrl}/api/admin/keys?keyType={Uri.EscapeDataString(keyType)}&expireMinutes={expireMinutes}&description={Uri.EscapeDataString("account:" + username)}";
         using var resp = await _http.PostAsync(url, null);
         resp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
         var root = doc.RootElement;
         var key = root.GetProperty("key").GetString()!;
         var id = root.GetProperty("id").GetInt32();
-        _logger.LogInformation("文件服创建 User 密钥 fileKeyId={KeyId} (account:{Username})", id, username);
+        _logger.LogInformation("文件服创建 {Type} 密钥 fileKeyId={KeyId} (account:{Username})", keyType, id, username);
         return (key, id);
     }
 

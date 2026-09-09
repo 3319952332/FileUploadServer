@@ -164,8 +164,8 @@ app.MapPost("/api/auth/login", async (LoginRequest req, AuthDbContext db, Accoun
     if (user.Status == "Disabled")
         return Results.Json(new ApiMessage("账号已被禁用"), statusCode: StatusCodes.Status403Forbidden);
 
-    // 向文件服确保/续期账号密钥
-    var (fileKey, fileKeyExpiresAt) = await keyService.EnsureValidAsync(user.Id, user.Username);
+    // 向文件服确保/续期账号密钥（管理员 → Admin 型密钥，可见全部文件）
+    var (fileKey, fileKeyExpiresAt) = await keyService.EnsureValidAsync(user.Id, user.Username, user.IsAdmin);
 
     // 签发会话
     var token = SessionTokenService.GenerateToken();
