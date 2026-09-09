@@ -13,5 +13,10 @@ public enum ApiKeyType
     /// <summary>
     /// 临时密钥 - 只能访问自有文件，过期后文件自动删除
     /// </summary>
-    Temporary = 2
+    Temporary = 2,
+
+    /// <summary>
+    /// 用户密钥 - 只能访问自有文件；会过期但不自动删除、关联文件不自动清理；登录时激活续期
+    /// </summary>
+    User = 3
 }

@@ -52,8 +52,8 @@ public class AdminController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden);
         }
 
-        // 验证keyType
-        if (keyType != "Admin" && keyType != "Temporary")
+        // 验证keyType（Admin/Temporary/User 三种类型）
+        if (keyType != "Admin" && keyType != "Temporary" && keyType != "User")
         {
             keyType = "Admin";
         }
@@ -98,6 +98,41 @@ public class AdminController : ControllerBase
     }
 
     /// <summary>
+    /// 续期/重新激活API密钥（仅localhost）
+    /// - 将密钥重新激活（IsDeleted=false）并延长过期时间
+    /// - 用于登录服务器为账号密钥(User)续期，或重新激活已过期的用户密钥
+    /// </summary>
+    [HttpPut("{key}/renew")]
+    public async Task<ActionResult<ApiKey>> RenewKey(
+        string key,
+        [FromQuery] int expireMinutes = 1440)
+    {
+        if (!IsLocalRequest())
+        {
+            return StatusCode(StatusCodes.Status403Forbidden);
+        }
+
+        // 续期上限一年（防误用将密钥无限期延长）
+        if (expireMinutes <= 0 || expireMinutes > 525600)
+        {
+            expireMinutes = 1440;
+        }
+
+        var apiKey = await _dbContext.ApiKeys.FirstOrDefaultAsync(k => k.Key == key);
+        if (apiKey == null)
+        {
+            return NotFound();
+        }
+
+        // 重新激活：取消软删除 + 延长过期时间
+        apiKey.IsDeleted = false;
+        apiKey.ExpiresAt = DateTime.UtcNow.AddMinutes(expireMinutes);
+        await _dbContext.SaveChangesAsync();
+
+        return Ok(apiKey);
+    }
+
+    /// <summary>
     /// 清理所有已过期/已删除的密钥（仅localhost）
     /// </summary>
     [HttpDelete("cleanup")]
@@ -108,8 +143,9 @@ public class AdminController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden);
         }
 
+        // 用户密钥（User）不参与手动清理，与"用户 key 不自动删除"原则一致
         var expiredKeys = await _dbContext.ApiKeys
-            .Where(k => k.IsDeleted || k.ExpiresAt < DateTime.UtcNow)
+            .Where(k => k.KeyType != "User" && (k.IsDeleted || k.ExpiresAt < DateTime.UtcNow))
             .ToListAsync();
 
         _dbContext.ApiKeys.RemoveRange(expiredKeys);
