@@ -1,4 +1,5 @@
 {
+  "_seedAdminNote": "如需引导管理员，请用环境变量 AUTH_SEED_ADMIN_USERNAME / AUTH_SEED_ADMIN_PASSWORD 注入（切勿写进本文件或 appsettings.json）",
   "ConnectionStrings": {
     "DefaultConnection": "Host=localhost;Port=5432;Database=fileupload;Username=postgres;Password=<DB_PASSWORD>"
   },
@@ -8,9 +9,7 @@
     "RenewThresholdMinutes": 43200,
     "RenewalScanMinutes": 360,
     "SessionTtlDays": 30,
-    "RegistrationEnabled": true,
-    "SeedAdminUsername": "<ADMIN_USERNAME>",
-    "SeedAdminPassword": "<ADMIN_PASSWORD>"
+    "RegistrationEnabled": true
   },
   "Logging": {
     "LogLevel": {
@@ -20,3 +19,4 @@
     }
   }
 }
+

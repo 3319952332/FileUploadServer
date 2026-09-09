@@ -105,8 +105,9 @@ static async Task<AuthUser?> GetAdminUserAsync(HttpContext ctx, AuthDbContext db
 
 static async Task SeedAdminAsync(AuthDbContext db, IConfiguration config)
 {
-    var adminName = config.GetValue<string>("Auth:SeedAdminUsername");
-    var adminPwd = config.GetValue<string>("Auth:SeedAdminPassword");
+    // 种子管理员只从环境变量读取（不在配置文件/appsettings.json 存明文初始密码）
+    var adminName = Environment.GetEnvironmentVariable("AUTH_SEED_ADMIN_USERNAME");
+    var adminPwd = Environment.GetEnvironmentVariable("AUTH_SEED_ADMIN_PASSWORD");
     if (string.IsNullOrWhiteSpace(adminName) || string.IsNullOrWhiteSpace(adminPwd))
         return;
     adminName = Normalize(adminName);
@@ -122,7 +123,7 @@ static async Task SeedAdminAsync(AuthDbContext db, IConfiguration config)
         ApprovedAt = DateTime.UtcNow,
     });
     await db.SaveChangesAsync();
-    Console.WriteLine($"[Auth] 已创建种子管理员账号: {adminName}");
+    Console.WriteLine($"[Auth] 已创建种子管理员账号: {adminName}（初始密码来自环境变量，请尽快登录修改）");
 }
 
 // ========== 认证 API ==========
@@ -196,6 +197,32 @@ app.MapPost("/api/auth/logout", async (HttpContext ctx, AuthDbContext db) =>
         }
     }
     return Results.Ok(new ApiMessage("已登出"));
+});
+
+// 修改密码：验证原密码 → 设置新密码 → 吊销除当前会话外的所有会话（防旧令牌继续有效）
+app.MapPost("/api/auth/change-password", async (ChangePasswordRequest req, HttpContext ctx, AuthDbContext db) =>
+{
+    var dto = await GetUserFromRequestAsync(ctx, db);
+    if (dto == null)
+        return Results.Unauthorized();
+
+    var user = await db.Users.FirstAsync(u => u.Id == dto.Id);
+    if (!PasswordHasher.Verify(req.OldPassword, user.PasswordHash))
+        return Results.Json(new ApiMessage("原密码不正确"), statusCode: StatusCodes.Status400BadRequest);
+    if (string.IsNullOrEmpty(req.NewPassword) || req.NewPassword.Length < 6 || req.NewPassword.Length > 128)
+        return Results.BadRequest(new ApiMessage("新密码长度需为 6-128"));
+
+    user.PasswordHash = PasswordHasher.Hash(req.NewPassword);
+
+    // 吊销该用户其他会话（保留当前会话）
+    var currentHash = SessionTokenService.HashToken(GetBearerToken(ctx) ?? "");
+    var others = await db.Sessions.Where(s => s.UserId == user.Id && s.RevokedAt == null && s.TokenHash != currentHash)
+        .ToListAsync();
+    foreach (var s in others)
+        s.RevokedAt = DateTime.UtcNow;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new ApiMessage("密码已修改，其他设备已下线"));
 });
 
 // me：当前用户信息（自动登录校验用）

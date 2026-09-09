@@ -6,6 +6,8 @@ public record LoginRequest(string Username, string Password, string? DeviceName)
 
 public record ResetPasswordRequest(string Password);
 
+public record ChangePasswordRequest(string OldPassword, string NewPassword);
+
 public record UserDto(int Id, string Username, bool IsAdmin, string Status, DateTime? ApprovedAt);
 
 public record LoginResponse(string Token, DateTime ExpiresAt, UserDto User, string FileKey, DateTime FileKeyExpiresAt);
