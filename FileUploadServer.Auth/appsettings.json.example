@@ -1,0 +1,22 @@
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Host=localhost;Port=5432;Database=fileupload;Username=postgres;Password=<DB_PASSWORD>"
+  },
+  "Auth": {
+    "FileServerAdminBaseUrl": "http://localhost:7000",
+    "UserKeyExpireMinutes": 129600,
+    "RenewThresholdMinutes": 43200,
+    "RenewalScanMinutes": 360,
+    "SessionTtlDays": 30,
+    "RegistrationEnabled": true,
+    "SeedAdminUsername": "<ADMIN_USERNAME>",
+    "SeedAdminPassword": "<ADMIN_PASSWORD>"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft.AspNetCore": "Warning",
+      "Microsoft.EntityFrameworkCore": "Warning"
+    }
+  }
+}
