@@ -347,10 +347,16 @@ public class AdminController : ControllerBase
     }
 
     /// <summary>
-    /// 检查是否是localhost请求
+    /// 检查是否是localhost请求。
+    /// ⚠️ 网关 nginx 反代后 RemoteIpAddress 恒为回环地址，不能单独作为可信判据；
+    /// 只有直连（无 X-Forwarded-For / X-Real-IP 头）的本机运维请求才视为 localhost。
     /// </summary>
     private bool IsLocalRequest()
     {
+        if (Request.Headers.ContainsKey("X-Forwarded-For") || Request.Headers.ContainsKey("X-Real-IP"))
+        {
+            return false; // 经代理的外部请求，必须走密钥鉴权
+        }
         var remoteIp = HttpContext.Connection.RemoteIpAddress;
         return remoteIp != null && IPAddress.IsLoopback(remoteIp);
     }
@@ -372,6 +378,10 @@ public class IpWhitelistController : ControllerBase
 
     private bool IsLocalRequest()
     {
+        if (Request.Headers.ContainsKey("X-Forwarded-For") || Request.Headers.ContainsKey("X-Real-IP"))
+        {
+            return false; // 经代理的外部请求，必须走密钥鉴权
+        }
         var remoteIp = HttpContext.Connection.RemoteIpAddress;
         return remoteIp != null && IPAddress.IsLoopback(remoteIp);
     }

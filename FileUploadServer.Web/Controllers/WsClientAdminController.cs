@@ -271,9 +271,14 @@ public class WsClientAdminController : ControllerBase
 
     /// <summary>
     /// 检查请求是否来自 localhost。
+    /// ⚠️ nginx 反代后 RemoteIpAddress 恒为回环地址，带转发头的外部请求不得视为本机。
     /// </summary>
     private bool IsLocalRequest()
     {
+        if (Request.Headers.ContainsKey("X-Forwarded-For") || Request.Headers.ContainsKey("X-Real-IP"))
+        {
+            return false;
+        }
         var remoteIp = HttpContext.Connection.RemoteIpAddress;
         if (remoteIp == null) return false;
         return IPAddress.IsLoopback(remoteIp);
