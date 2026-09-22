@@ -63,6 +63,12 @@ public sealed class FileToolHandlers
         }
 
         var remotePath = args?["remote_path"]?.GetValue<string>();
+        var isPublic = args?["is_public"]?.GetValue<bool>() ?? false;
+        var publicPath = args?["public_path"]?.GetValue<string>();
+        if (isPublic && string.IsNullOrEmpty(publicPath))
+        {
+            throw new McpError(JsonRpcError.Codes.InvalidParams, "is_public=true 时必须提供 public_path（以 /public/ 开头）");
+        }
 
         using var fileStream = File.OpenRead(localPath);
         using var form = new MultipartFormDataContent();
@@ -73,11 +79,38 @@ public sealed class FileToolHandlers
         {
             form.Add(new StringContent(remotePath), "path");
         }
+        if (isPublic)
+        {
+            form.Add(new StringContent("true"), "is_public");
+            form.Add(new StringContent(publicPath!), "public_path");
+        }
 
         var response = await _http.SendOnceAsync(HttpMethod.Post, "/api/files", form, _http.GetTimeout(isLargeTransfer: true));
-        return response.IsSuccessStatusCode
-            ? CallToolResult.Success(await response.Content.ReadAsStringAsync())
-            : await ErrorMapper.ToErrorResultAsync(response, $"file_upload {localPath}");
+        if (!response.IsSuccessStatusCode)
+        {
+            return await ErrorMapper.ToErrorResultAsync(response, $"file_upload {localPath}");
+        }
+
+        // 透传后端响应；若上传即公开，把可直接访问的公开 URL 补进结果 JSON
+        var body = await response.Content.ReadAsStringAsync();
+        if (isPublic && response.Headers.TryGetValues("X-Public-Url", out var urls))
+        {
+            try
+            {
+                var node = JsonNode.Parse(body)?.AsObject();
+                if (node != null)
+                {
+                    var publicUrl = urls.First();
+                    node["public_url"] = $"{_http.FileServerBaseUrl}{publicUrl}";
+                    body = node.ToJsonString(McpJson.SerializeOptions);
+                }
+            }
+            catch
+            {
+                // 后端响应不是预期 JSON 时原样透传
+            }
+        }
+        return CallToolResult.Success(body);
     }
 
     // ---------------------------------------------------------------- file_download
@@ -156,7 +189,7 @@ public sealed class FileToolHandlers
         var content = new StringContent(body.ToJsonString(McpJson.SerializeOptions), Encoding.UTF8, "application/json");
 
         var response = await _http.SendWithRetryAsync(
-            HttpMethod.Put, $"/api/admin/files/{fileId}/public", content, _http.GetTimeout(false));
+            HttpMethod.Put, $"/api/file-public/{fileId}", content, _http.GetTimeout(false));
         return response.IsSuccessStatusCode
             ? CallToolResult.Success(await response.Content.ReadAsStringAsync())
             : await ErrorMapper.ToErrorResultAsync(response, $"file_set_public id={fileId}");

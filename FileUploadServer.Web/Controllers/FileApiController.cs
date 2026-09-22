@@ -1,11 +1,13 @@
 using System.Security.Cryptography;
 using FileUploadServer.Core.Entities;
 using FileUploadServer.Core.Interfaces;
+using FileUploadServer.Core.Models;
 using FileUploadServer.Infrastructure.Data;
 using FileUploadServer.Infrastructure.Encryption;
 using FileUploadServer.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace FileUploadServer.Web.Controllers;
 
@@ -21,6 +23,7 @@ public class FileApiController : ControllerBase
     private readonly IStorageStrategyFactory _storageStrategyFactory;
     private readonly FileDeleteService _deleteService;
     private readonly ILogger<FileApiController> _logger;
+    private readonly IOptions<PublicPathOptions> _publicPathOptions;
 
     public FileApiController(
         IFileItemRepository repository,
@@ -30,7 +33,8 @@ public class FileApiController : ControllerBase
         IServiceScopeFactory scopeFactory,
         IStorageStrategyFactory storageStrategyFactory,
         FileDeleteService deleteService,
-        ILogger<FileApiController> logger)
+        ILogger<FileApiController> logger,
+        IOptions<PublicPathOptions> publicPathOptions)
     {
         _repository = repository;
         _env = env;
@@ -40,6 +44,7 @@ public class FileApiController : ControllerBase
         _storageStrategyFactory = storageStrategyFactory;
         _deleteService = deleteService;
         _logger = logger;
+        _publicPathOptions = publicPathOptions;
     }
 
     /// <summary>
@@ -100,11 +105,17 @@ public class FileApiController : ControllerBase
     }
 
     /// <summary>
-    /// 上传文件（自动关联当前密钥，支持透明加密）
+    /// 上传文件（自动关联当前密钥，支持透明加密）。
+    /// 可选表单参数 is_public=true + public_path 实现「上传即公开」，
+    /// 公开路径规则与 AdminController.SetFilePublic 一致（必须匹配配置的公共模式）。
     /// </summary>
     [HttpPost]
     [ProducesResponseType(StatusCodes.Status201Created)]
-    public async Task<ActionResult<FileItem>> Upload(IFormFile file, [FromForm] string? path = null)
+    public async Task<ActionResult<FileItem>> Upload(
+        IFormFile file,
+        [FromForm] string? path = null,
+        [FromForm] bool is_public = false,
+        [FromForm] string? public_path = null)
     {
         var currentKey = GetCurrentApiKey();
         if (currentKey == null)
@@ -216,6 +227,36 @@ public class FileApiController : ControllerBase
             ClientId = clientId,
         };
 
+        // 上传即公开：校验 public_path 匹配配置的公共模式（与 SetFilePublic 相同规则）
+        string? publicUrl = null;
+        if (is_public)
+        {
+            var patterns = _publicPathOptions.Value.Patterns;
+            var pp = public_path?.Trim();
+            if (string.IsNullOrEmpty(pp))
+            {
+                return BadRequest("is_public=true 时必须提供 public_path");
+            }
+            if (!pp.StartsWith('/'))
+            {
+                pp = "/" + pp;
+            }
+            var prefixOk = patterns.Any(p => pp.StartsWith(p[..Math.Max(p.IndexOf('*'), 0)], StringComparison.OrdinalIgnoreCase));
+            if (!prefixOk)
+            {
+                return BadRequest($"public_path 必须匹配公共访问模式之一（{string.Join(", ", patterns)}），当前值: {pp}");
+            }
+            var conflict = await _dbContext.Files.FirstOrDefaultAsync(
+                f => f.IsPublic && f.PublicPath == pp);
+            if (conflict != null)
+            {
+                return Conflict($"public_path 已被文件 {conflict.Id} 占用: {pp}");
+            }
+            fileItem.IsPublic = true;
+            fileItem.PublicPath = pp;
+            publicUrl = $"/p{pp}";
+        }
+
         // Forward file to WebSocket storage client
         if (isWsStorage && clientId != null)
         {
@@ -264,6 +305,11 @@ public class FileApiController : ControllerBase
         await _repository.AddAsync(fileItem);
         await _repository.SaveChangesAsync();
 
+        if (publicUrl != null)
+        {
+            // 上传即公开：在响应体中附带可直接访问的公开 URL
+            Response.Headers["X-Public-Url"] = publicUrl;
+        }
         return Created($"api/files/{fileItem.Id}", fileItem);
     }
 

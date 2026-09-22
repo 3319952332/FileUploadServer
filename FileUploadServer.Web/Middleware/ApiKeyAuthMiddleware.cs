@@ -22,8 +22,10 @@ public class ApiKeyAuthMiddleware
         // - admin接口自己做localhost限制
         // - public接口用于公网申请临时密钥
         // - /p/ 路径由PublicFileMiddleware处理安全和限流
+        // - /api/file-public 供 MCP file_set_public 公网调用，控制器自行校验 Admin 密钥
         if (context.Request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase) ||
             context.Request.Path.StartsWithSegments("/api/public", StringComparison.OrdinalIgnoreCase) ||
+            context.Request.Path.StartsWithSegments("/api/file-public", StringComparison.OrdinalIgnoreCase) ||
             context.Request.Path.StartsWithSegments("/p", StringComparison.OrdinalIgnoreCase))
         {
             await _next(context);

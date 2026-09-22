@@ -23,6 +23,9 @@ public sealed class McpHttpClient : IDisposable
     public TimeSpan GetTimeout(bool isLargeTransfer) => TimeSpan.FromSeconds(
         isLargeTransfer ? _config.RequestTimeoutSeconds : _config.ShortRequestTimeoutSeconds);
 
+    /// <summary>后端服务器基地址（不带末尾斜杠），用于拼接公开访问 URL。</summary>
+    public string FileServerBaseUrl => _config.FileServerBaseUrl.TrimEnd('/');
+
     /// <summary>
     /// 带重试的请求：5xx / 超时 / 连接失败按指数退避重试（最多 MaxRetries 次）。
     /// content 必须可重复发送（StringContent 等内存缓冲内容；上传用 SendOnceAsync）。

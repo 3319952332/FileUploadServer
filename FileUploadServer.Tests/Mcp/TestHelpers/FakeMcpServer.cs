@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using FileUploadServer.Mcp;
 using FileUploadServer.Mcp.Protocol;
 using FileUploadServer.Mcp.Server;
@@ -34,7 +35,8 @@ public sealed class FakeMcpServer : IDisposable
     // 以下请求均带 id，Server 必有响应，故返回非空 JsonRpcResponse。
     public async Task<JsonRpcResponse> InitializeAsync(string protocolVersion = "2025-03-26", long id = 1)
     {
-        var request = MakeRequest(id, "initialize", $"{{\"protocolVersion\":\"{protocolVersion}\"}}");
+        var request = MakeRequest(id, "initialize",
+            new JsonObject { ["protocolVersion"] = protocolVersion });
         return (await Server.HandleAsync(request))!;
     }
 
@@ -44,9 +46,17 @@ public sealed class FakeMcpServer : IDisposable
         await Server.HandleAsync(request);
     }
 
+    /// <summary>调用工具。argsJson 必须是合法 JSON 对象文本（Windows 路径请改用 JsonObject 重载）。</summary>
     public async Task<JsonRpcResponse> CallToolAsync(string name, string argsJson = "{}", long id = 10)
     {
-        var request = MakeRequest(id, "tools/call", $"{{\"name\":\"{name}\",\"arguments\":{argsJson}}}");
+        return await CallToolAsync(name, JsonNode.Parse(argsJson)?.AsObject(), id);
+    }
+
+    /// <summary>调用工具（结构化参数，经序列化构造，避免手拼 JSON 的转义问题）。</summary>
+    public async Task<JsonRpcResponse> CallToolAsync(string name, JsonObject? args, long id = 10)
+    {
+        var payload = new JsonObject { ["name"] = name, ["arguments"] = args ?? new JsonObject() };
+        var request = MakeRequest(id, "tools/call", payload);
         return (await Server.HandleAsync(request))!;
     }
 
@@ -65,10 +75,20 @@ public sealed class FakeMcpServer : IDisposable
 
     public void Dispose() => HttpClient.Dispose();
 
-    private static JsonRpcRequest MakeRequest(long? id, string method, string paramsJson = "{}")
+    private static JsonRpcRequest MakeRequest(long? id, string method, JsonNode? paramsNode = null)
     {
-        var idPart = id.HasValue ? $"\"id\":{id.Value}," : string.Empty;
-        var json = $"{{\"jsonrpc\":\"2.0\",{idPart}\"method\":\"{method}\",\"params\":{paramsJson}}}";
-        return JsonRpcRequest.TryParse(json, out _)!;
+        var obj = new JsonObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["method"] = method,
+            ["params"] = paramsNode ?? new JsonObject(),
+        };
+        if (id.HasValue)
+        {
+            obj["id"] = id.Value;
+        }
+        // 解析失败必须显式抛异常，让测试构造错误在源头暴露（此前用 ! 吞掉导致 NullReferenceException）
+        return JsonRpcRequest.TryParse(obj.ToJsonString(), out _)
+            ?? throw new InvalidOperationException($"测试构造的 JSON-RPC 请求无法解析: {method}");
     }
 }

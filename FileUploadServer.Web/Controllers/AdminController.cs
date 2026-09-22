@@ -1,9 +1,11 @@
 using System.Net;
 using FileUploadServer.Core.Entities;
+using FileUploadServer.Core.Models;
 using FileUploadServer.Infrastructure.Data;
 using FileUploadServer.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace FileUploadServer.Web.Controllers;
 
@@ -155,23 +157,118 @@ public class AdminController : ControllerBase
     }
 
     /// <summary>
-    /// 设置文件公共访问标记（仅localhost）
+    /// 设置文件公共访问标记（公网可达的受控例外，供 MCP file_set_public 使用）。
+    /// /api/admin/* 被鉴权中间件跳过且被 nginx ACL 整体屏蔽，本路由独立于 admin 前缀、
+    /// 在网关单独放行：请求必须携带有效 Admin 类型 API Key（?key= 查询参数），localhost 免 key。
+    /// publicPath 必须以配置的公共模式前缀（如 /public/）开头——URL 约定为 /p + publicPath，
+    /// 不匹配模式的路径会被 PublicFileMiddleware 静默 404，故在写入前强制校验。
     /// </summary>
-    [HttpPut("/api/admin/files/{id}/public")]
-    public async Task<IActionResult> SetFilePublic(int id, [FromBody] SetPublicRequest request)
+    [HttpPut("/api/file-public/{id}")]
+    public async Task<IActionResult> SetFilePublic(
+        int id,
+        [FromBody] SetPublicRequest request,
+        [FromQuery] string? key = null,
+        [FromServices] IOptions<PublicPathOptions> publicPathOptions = null!)
     {
-        // 已有 API key 中间件认证，无需 localhost 限制
+        if (!IsLocalRequest())
+        {
+            var apiKey = await ResolveAdminKeyAsync(key);
+            if (apiKey == null)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden,
+                    new { status = "error", error_code = -32003, message = "权限不足：设置公开访问需要有效的 Admin 密钥" });
+            }
+        }
+
         var file = await _dbContext.Files.FindAsync(id);
         if (file == null)
         {
             return NotFound();
         }
 
-        file.IsPublic = request.IsPublic;
-        file.PublicPath = request.IsPublic ? request.PublicPath : null;
+        if (request.IsPublic)
+        {
+            var publicPath = request.PublicPath?.Trim();
+            if (string.IsNullOrEmpty(publicPath))
+            {
+                return BadRequest(new { status = "error", message = "is_public=true 时必须提供 public_path" });
+            }
+            if (!publicPath.StartsWith('/'))
+            {
+                publicPath = "/" + publicPath;
+            }
+            if (!IsValidPublicPath(publicPath, publicPathOptions.Value.Patterns))
+            {
+                var prefixes = string.Join(", ", publicPathOptions.Value.Patterns.Select(PatternPrefix));
+                return BadRequest(new
+                {
+                    status = "error",
+                    message = $"public_path 必须匹配公共访问模式之一（{prefixes}），当前值: {publicPath}"
+                });
+            }
+
+            // 公共路径唯一性检查（不同文件不能共用同一 publicPath）
+            var conflict = await _dbContext.Files.FirstOrDefaultAsync(
+                f => f.IsPublic && f.PublicPath == publicPath && f.Id != id);
+            if (conflict != null)
+            {
+                return Conflict(new { status = "error", message = $"public_path 已被文件 {conflict.Id} 占用: {publicPath}" });
+            }
+
+            file.IsPublic = true;
+            file.PublicPath = publicPath;
+        }
+        else
+        {
+            file.IsPublic = false;
+            file.PublicPath = null;
+        }
 
         await _dbContext.SaveChangesAsync();
-        return Ok(file);
+        return Ok(new
+        {
+            file.Id,
+            file.FileName,
+            file.FileSize,
+            file.ContentType,
+            file.IsPublic,
+            file.PublicPath,
+            PublicUrl = file.IsPublic && !string.IsNullOrEmpty(file.PublicPath)
+                ? $"/p{file.PublicPath}"
+                : null,
+        });
+    }
+
+    /// <summary>
+    /// 按 key 查询参数解析有效的 Admin 密钥（供 admin 接口自校验用）。
+    /// </summary>
+    private async Task<ApiKey?> ResolveAdminKeyAsync(string? key)
+    {
+        if (string.IsNullOrEmpty(key))
+        {
+            return null;
+        }
+        var apiKey = await _dbContext.ApiKeys.FirstOrDefaultAsync(k => k.Key == key && !k.IsDeleted);
+        if (apiKey == null || !apiKey.IsValid() || apiKey.KeyType != "Admin")
+        {
+            return null;
+        }
+        return apiKey;
+    }
+
+    /// <summary>
+    /// 校验 publicPath 是否落在配置的公共模式之下（取模式的目录前缀做大小写不敏感比较）。
+    /// </summary>
+    private static bool IsValidPublicPath(string publicPath, string[] patterns)
+    {
+        return patterns.Any(p => publicPath.StartsWith(PatternPrefix(p), StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string PatternPrefix(string pattern)
+    {
+        // "/public/*" -> "/public/"；无通配符则原样返回
+        var idx = pattern.IndexOf('*');
+        return idx >= 0 ? pattern[..idx] : pattern;
     }
 
     /// <summary>

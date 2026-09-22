@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Nodes;
 using FileUploadServer.Mcp.Protocol;
 using FileUploadServer.Tests.Mcp.TestHelpers;
 
@@ -21,7 +22,8 @@ public class McpFileUploadTests
             fake.HttpHandler.SetDefault(HttpStatusCode.Created, UploadedJson);
             await fake.InitializeAndNotifyAsync();
 
-            var response = await fake.CallToolAsync("file_upload", $"{{\"local_file_path\":\"{localPath}\"}}");
+            var response = await fake.CallToolAsync("file_upload",
+                new JsonObject { ["local_file_path"] = localPath });
 
             Assert.False(response!.ToolIsError());
             Assert.Contains("42", response.ToolText());
@@ -72,8 +74,11 @@ public class McpFileUploadTests
             fake.HttpHandler.SetDefault(HttpStatusCode.Created, UploadedJson);
             await fake.InitializeAndNotifyAsync();
 
-            await fake.CallToolAsync("file_upload",
-                $"{{\"local_file_path\":\"{localPath}\",\"remote_path\":\"/docs/report.pdf\"}}");
+            await fake.CallToolAsync("file_upload", new JsonObject
+            {
+                ["local_file_path"] = localPath,
+                ["remote_path"] = "/docs/report.pdf",
+            });
 
             var body = fake.HttpHandler.RequestBodies[0];
             Assert.NotNull(body);
@@ -99,7 +104,8 @@ public class McpFileUploadTests
             fake.HttpHandler.SetDefault(HttpStatusCode.RequestEntityTooLarge, "File too large");
             await fake.InitializeAndNotifyAsync();
 
-            var response = await fake.CallToolAsync("file_upload", $"{{\"local_file_path\":\"{localPath}\"}}");
+            var response = await fake.CallToolAsync("file_upload",
+                new JsonObject { ["local_file_path"] = localPath });
 
             Assert.True(response!.ToolIsError());
             var parsed = response.ParseToolText();

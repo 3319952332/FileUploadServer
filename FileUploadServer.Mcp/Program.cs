@@ -3,6 +3,21 @@ using FileUploadServer.Mcp.Protocol;
 using FileUploadServer.Mcp.Server;
 using FileUploadServer.Mcp.Services;
 using Microsoft.Extensions.Configuration;
+using System.Text;
+
+// ---------------------------------------------------------------------------
+// stdio 编码：协议流与日志流统一强制 UTF-8。
+// McpJson 使用 UnsafeRelaxedJsonEscaping（中文原样输出、不转义为 \uXXXX），
+// 若沿用 Windows 默认代码页（GBK/936）写 stdout，中文会被按 UTF-8 解码的客户端
+// 读成乱码（如 "权限不足" → "Ȩ�޲���"）。
+// 这里不用 Console.OutputEncoding：stdout 被重定向为管道时进程可能没有控制台
+// 句柄，该 setter 会抛 IOException；直接包装标准流则与是否有控制台无关。
+// ---------------------------------------------------------------------------
+var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+using var standardInput = new StreamReader(Console.OpenStandardInput(), utf8NoBom);
+using var standardOutput = new StreamWriter(Console.OpenStandardOutput(), utf8NoBom);
+using var standardError = new StreamWriter(Console.OpenStandardError(), utf8NoBom) { AutoFlush = true };
+McpLogger.Writer = msg => standardError.WriteLine(msg);
 
 // ---------------------------------------------------------------------------
 // 配置加载：appsettings.json（McpServer 节）→ 环境变量 FILE_SERVER_BASE_URL /
@@ -33,7 +48,7 @@ catch (InvalidOperationException ex)
 using var httpClient = new McpHttpClient(config);
 var handlers = new FileToolHandlers(httpClient);
 var server = new McpServer(handlers);
-await using var transport = new StdioTransport();
+await using var transport = new StdioTransport(standardInput, standardOutput);
 
 McpLogger.Info($"{McpServer.ServerName} v{McpServer.ServerVersion} started, backend: {config.FileServerBaseUrl}");
 

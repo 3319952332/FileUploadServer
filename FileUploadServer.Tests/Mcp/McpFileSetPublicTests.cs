@@ -8,7 +8,7 @@ namespace FileUploadServer.Tests.Mcp;
 public class McpFileSetPublicTests
 {
     private const string UpdatedJson =
-        """{"id":1,"fileName":"doc.pdf","isPublic":true,"publicPath":"/shared/doc.pdf"}""";
+        """{"id":1,"fileName":"doc.pdf","isPublic":true,"publicPath":"/public/doc.pdf","publicUrl":"/p/public/doc.pdf"}""";
 
     // ------------------------------------------------------------------ PUB-01
     [Fact]
@@ -20,17 +20,17 @@ public class McpFileSetPublicTests
         await fake.InitializeAndNotifyAsync();
 
         var response = await fake.CallToolAsync("file_set_public",
-            """{"file_id":1,"is_public":true,"public_path":"/shared/doc.pdf"}""");
+            """{"file_id":1,"is_public":true,"public_path":"/public/doc.pdf"}""");
 
         Assert.False(response!.ToolIsError());
 
         var body = fake.HttpHandler.RequestBodies[0]!;
         Assert.Contains("isPublic", body);
         Assert.Contains("true", body);
-        Assert.Contains("/shared/doc.pdf", body);
+        Assert.Contains("/public/doc.pdf", body);
 
         var url = fake.HttpHandler.LastRequest.RequestUri!.AbsolutePath;
-        Assert.Equal("/api/admin/files/1/public", url);
+        Assert.Equal("/api/file-public/1", url);
     }
 
     // ------------------------------------------------------------------ PUB-02
@@ -74,7 +74,7 @@ public class McpFileSetPublicTests
         await fake.InitializeAndNotifyAsync();
 
         var response = await fake.CallToolAsync("file_set_public",
-            """{"file_id":1,"is_public":true,"public_path":"/shared/doc.pdf"}""");
+            """{"file_id":1,"is_public":true,"public_path":"/public/doc.pdf"}""");
 
         Assert.True(response!.ToolIsError());
         var parsed = response.ParseToolText();

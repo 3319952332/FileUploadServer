@@ -68,7 +68,7 @@ public static class ToolDefinitions
     public static ToolDefinition FileUpload { get; } = new()
     {
         Name = "file_upload",
-        Description = "上传一个文件到服务器。支持本地磁盘存储和 WebSocket 远程存储（根据路径前缀自动路由）。如果服务器启用了加密，文件会被 AES-256-GCM 透明加密后存储。最大支持 1GB 单文件。\n\n使用场景：当用户要求保存、存储或上传文件时使用。\n\n注意事项：\n- remote_path 以 / 开头，如 /documents/report.pdf\n- 如果 remote_path 匹配某个 WS 存储节点的路径前缀，文件将转发到该远程节点\n- 上传成功后返回文件元数据，包含可用于后续操作的 file_id",
+        Description = "上传一个文件到服务器。支持本地磁盘存储和 WebSocket 远程存储（根据路径前缀自动路由）。如果服务器启用了加密，文件会被 AES-256-GCM 透明加密后存储。最大支持 1GB 单文件。\n\n使用场景：当用户要求保存、存储或上传文件时使用；需要生成可直接分享的公开链接时，传 is_public=true + public_path 实现「上传即公开」。\n\n注意事项：\n- remote_path 以 / 开头，如 /documents/report.pdf\n- 如果 remote_path 匹配某个 WS 存储节点的路径前缀，文件将转发到该远程节点\n- 上传成功后返回文件元数据，包含可用于后续操作的 file_id\n- public_path 必须匹配服务器公共访问模式（当前为 /public/ 前缀），完整公开 URL = {base}/p{public_path}，响应头 X-Public-Url 也会带回",
         InputSchema = Schema(
             new JsonObject
             {
@@ -81,6 +81,16 @@ public static class ToolDefinitions
                 {
                     ["type"] = "string",
                     ["description"] = "服务器上的存储路径，如 /documents/report.pdf。以 / 开头。如果不指定则使用原始文件名存储在根目录。",
+                },
+                ["is_public"] = new JsonObject
+                {
+                    ["type"] = "boolean",
+                    ["description"] = "可选：true=上传即设为公开可匿名访问（需同时提供 public_path）",
+                },
+                ["public_path"] = new JsonObject
+                {
+                    ["type"] = "string",
+                    ["description"] = "可选：公开访问路径，必须以 /public/ 开头，如 /public/image.jpg。仅当 is_public=true 时需要。",
                 },
             },
             "local_file_path"),
@@ -121,7 +131,7 @@ public static class ToolDefinitions
     public static ToolDefinition FileSetPublic { get; } = new()
     {
         Name = "file_set_public",
-        Description = "设置文件的公共访问标记。设为公开后，文件可通过 /p/{public_path} 路径匿名访问（需满足 IP 白名单、限流等条件）。取消公开后，文件只能通过 API Key 访问。\n\n使用场景：需要分享文件给没有 API 密钥的外部用户时使用。\n\n注意事项：\n- 需要 Admin 类型的 API 密钥\n- public_path 是公开访问的唯一路径标识，如 /shared/image.jpg\n- 取消公开时设置 is_public=false 即可\n- 公开文件受 IP 白名单/黑名单、限流、文件大小限制等多重保护",
+        Description = "设置文件的公共访问标记。设为公开后，文件可通过 {base}/p{public_path} 路径匿名访问（需满足 IP 白名单、限流等条件）。取消公开后，文件只能通过 API Key 访问。\n\n使用场景：需要分享文件给没有 API 密钥的外部用户时使用。\n\n注意事项：\n- 需要 Admin 类型的 API 密钥\n- public_path 必须以 /public/ 开头（服务器配置的公共模式），如 /public/image.jpg；不匹配会被拒绝\n- 完整公开访问 URL = 服务器地址 + /p + public_path，成功响应中的 public_url 字段直接给出\n- 取消公开时设置 is_public=false 即可\n- 公开文件受 IP 白名单/黑名单、限流、文件大小限制等多重保护",
         InputSchema = Schema(
             new JsonObject
             {
@@ -138,7 +148,7 @@ public static class ToolDefinitions
                 ["public_path"] = new JsonObject
                 {
                     ["type"] = "string",
-                    ["description"] = "公开访问路径，如 /shared/report.pdf。仅当 is_public=true 时需要。",
+                    ["description"] = "公开访问路径，必须以 /public/ 开头，如 /public/report.pdf。仅当 is_public=true 时需要。",
                 },
             },
             "file_id", "is_public"),
