@@ -20,14 +20,16 @@
 
 ## 1. 密钥类型
 
-系统定义两种 API 密钥类型（`ApiKeyType` 枚举）：
+系统定义三种 API 密钥类型（`ApiKeyType` 枚举）：
 
 | 类型 | 枚举值 | 字符串标识 | 说明 |
 |---|---|---|---|
-| **Admin** | `1` | `"Admin"` | 管理密钥，可访问所有文件，仅 localhost 可创建 |
+| **Admin** | `1` | `"Admin"` | 管理密钥，可访问所有文件，仅 localhost 可创建；与 User/Temporary 相比不会因后台任务自动清理；过期需手动续期或重建 |
 | **Temporary** | `2` | `"Temporary"` | 临时密钥，仅访问自己上传的文件，公网可申请（需 IP 白名单），过期后文件被后台自动清理 |
+| **User** | `3` | `"User"` | 用户密钥（账号体系），仅访问自有文件；**会过期但不自动删除**，关联文件**也不自动清理**；登录时通过 `PUT /api/admin/keys/{key}/renew` 重新激活并续期 |
 
-> 源码：`FileUploadServer.Core/Entities/ApiKeyType.cs:6-17`。注意实际数据库中 `KeyType` 字段存储的是字符串（`"Admin"` / `"Temporary"`），而非枚举数值。
+> 源码：`FileUploadServer.Core/Entities/ApiKeyType.cs:6-22`。注意实际数据库中 `KeyType` 字段存储的是字符串（`"Admin"` / `"Temporary"` / `"User"`），而非枚举数值。
+> `PermissionService` 当前只区分 Admin（看全部）与非 Admin（看自己），User 与 Temporary 在过滤上表现一致，差异在后台清理与续期语义。
 
 ---
 

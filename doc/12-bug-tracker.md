@@ -1,15 +1,16 @@
 # 踩坑记录
 > 用途：记录项目开发/测试/部署过程中遇到的 Bug 和踩坑，含症状、根因、修复方案和教训
-> 创建：2026-08-02 | 关联：[01-architecture.md](01-architecture.md)、[11-deployment.md](11-deployment.md)、[13-mcp-baseline.md](13-mcp-baseline.md)、[14-dev-log.md](14-dev-log.md)
+> 创建：2026-08-02 | 最近更新：2026-10-01 | 关联：[01-architecture.md](01-architecture.md)、[11-deployment.md](11-deployment.md)、[13-mcp-baseline.md](13-mcp-baseline.md)、[14-dev-log.md](14-dev-log.md)
 
 ## 目录
-1. [历史 Bug（7 项）](#1-历史-bug7-项)
+1. [历史 Bug（8 项）](#1-历史-bug8-项)
 2. [MCP 开发踩坑（7 项）](#2-mcp-开发踩坑7-项)
 3. [部署踩坑（7 项）](#3-部署踩坑7-项)
 4. [公开访问排查踩坑（7 项）](#4-公开访问排查踩坑7-项)
-5. [教训总结](#5-教训总结)
+5. [运维/密钥管理踩坑](#5-运维密钥管理踩坑)
+6. [教训总结](#6-教训总结)
 
-## 1. 历史 Bug（7 项）
+## 1. 历史 Bug（8 项）
 
 ### Bug #1：KeyProvider.chmod 进程死锁
 
@@ -168,6 +169,41 @@ System.IO.File.SetUnixFileMode(filePath,
 
 ---
 
+### Bug #8：`AdminController.CreateKey` 对 `expireMinutes=0` 创建立即过期的密钥
+
+- **严重程度**：Medium（误导但可绕开）
+- **发现阶段**：2026-10-01 运维恢复
+- **症状**：通过 `POST /api/admin/keys?expireMinutes=0&keyType=Admin` 创建 Admin 密钥后立即过期，调用 `GET /api/files?key=...` 返回 401 Unauthorized，密钥看起来"创建完就没了"。但历史中已有用 `expireMinutes=0` 创建的密钥（如 ID 20 `file-upload-mcp-master`，`expiresAt=2216-09-20`）始终有效。
+- **根因**：`AdminController.CreateKey`（`FileUploadServer.Web/Controllers/AdminController.cs:47-77`）直接把 `expireMinutes` 传给 `DateTime.UtcNow.AddMinutes(expireMinutes)`，传 0 时即 `ExpiresAt = CreatedAt`（差 1 毫秒），`IsValid()` 因 `UtcNow >= ExpiresAt` 立刻判定为过期。
+
+  ```csharp
+  // 现状：传 0 → 立即过期
+  ExpiresAt = DateTime.UtcNow.AddMinutes(expireMinutes)
+  ```
+
+  与之对比：
+  - `AdminController.RenewKey`（同文件 117-121 行）显式拒绝 0：`if (expireMinutes <= 0 || expireMinutes > 525600) expireMinutes = 1440;`
+  - 历史 ID 20 的 2216 过期时间，说明早期实现对 0 有专门语义（"永不过期"），重构后回归到默认 `AddMinutes` 行为但未补齐边界。
+
+- **修复（推荐方案）**：与 `RenewKey` 对齐，约定 `expireMinutes <= 0` 表示永不过期（写一个很远的未来日期，如 `DateTime.UtcNow.AddYears(200)`），而不是 fallback 到 1440。
+
+  ```csharp
+  // 建议替换 CreateKey 中的赋值
+  ExpiresAt = expireMinutes <= 0
+      ? DateTime.UtcNow.AddYears(200)               // 永不过期
+      : DateTime.UtcNow.AddMinutes(expireMinutes);
+  ```
+
+  并对 `expireMinutes` 加上上限保护（如 `> 525600` 时回退 1440），与 `RenewKey` 保持一致。
+
+- **临时绕过**：创建长效 Admin 密钥传 `expireMinutes=525600`（1 年）；后台 `BackgroundCleanupService` 不会主动清理 Admin 密钥，只清理已过期的 Admin/Temporary。
+- **教训**：
+  1. 边界值（特别是 `0`）必须有显式语义，不能"自然形成"。一个 API 的同一参数在 Create 和 Renew 两个端点表现不一致是高危信号。
+  2. 续期接口（RenewKey）已经踩过这个坑：`if (expireMinutes <= 0 || ...)`，但创建接口（CreateKey）漏掉了同样的检查。
+  3. 涉及安全/凭据的接口变更应该跑"边界用例矩阵"（0 / 负数 / 极小值 / Int.MaxValue / NaN），不能用 happy-path 测过就发布。
+
+---
+
 ## 2. MCP 开发踩坑（7 项）
 
 来源：[14-dev-log.md](14-dev-log.md) — 2026-08-02 开发记录
@@ -210,9 +246,20 @@ System.IO.File.SetUnixFileMode(filePath,
 | 6 | **上传本地副本残留** | 网关本地 `wwwroot/uploads` 累积 16 个无记录对应的孤儿密文（上传时本地加密副本从不删除） | 根因：上传流程本地加密中转副本在 WS 转发成功后未删除；修复为 WS 转发成功即删本地副本（API + 网页两处），存量孤儿已手动清理 |
 | 7 | **WS 客户端二进制帧跨缓冲区截断** | 分块上传（密文 >64KB）后 WS 节点文件尾部少 24 字节：网关日志 `DiskSize=95827` 正确，节点实际 95803；解密 `tag mismatch`，公开访问落入 ExceptionHandler→/Error 无 key 返回 401 | 根因：`WsFileStorageClient.ReceiveLoopAsync` 的 Binary 分支未像 Text 分支那样累积到 `EndOfMessage`，而帧大小（24B 头+64KB 数据=65560B）超过接收缓冲区（65536B），跨缓冲区边界的帧被截断丢失尾部 24 字节；修复为累积完整帧再交给 `HandleBinaryMessage` 解析（提交 `2383d26`，重传即恢复） |
 
-## 5. 教训总结
+## 5. 运维/密钥管理踩坑
 
-### 5.1 核心教训
+来源：[14-dev-log.md](14-dev-log.md) — 2026-10-01 运维恢复
+
+| # | 踩坑 | 现象 | 解决 |
+|---|------|------|------|
+| 1 | **Admin 密钥软删除后客户端无法登录** | 文件管理桌面端用某个 Admin Key 登录失败（401），原因是这个 Key 在数据库里已被软删（`IsDeleted=true`），但密钥值仍残留在客户端配置中；MCP 用的另一个 Admin Key（ID 20）不受影响所以 MCP 看似正常 | 客户端对应的 Admin Key 重新创建：`POST /api/admin/keys?description=file-management-client-admin&expireMinutes=525600&keyType=Admin`，把新值下发到客户端；旧的"幽灵"软删 Key 留作审计，无需立即物理清理（`cleanup` 端点会处理） |
+| 2 | **`expireMinutes=0` 创建立即过期（Bug #8）** | 恢复时第一反应是传 `expireMinutes=0` 表示"永不过期"（文档/skills/历史用例都这么写），结果新密钥刚创建就 401 | 改传 `525600`（1 年）创建长效密钥；问题已记入 Bug #8 待修 |
+| 3 | **`.mcp.json` 未版本化、缺密钥模板** | 桌面 Claude Code 之前能连 MCP 是因为本地 `.mcp.json`（含密钥）存在，但仓库没追踪，机器重装/换设备就丢；也没 `.example` 模板供新设备快速恢复 | 仓库新增 `.mcp.json.example`（脱敏）供模板参考；`.mcp.json` 加入 `.gitignore`；密钥本身仍按环境变量形式注入 |
+| 4 | **当前 `PermissionService` 不区分 Temporary 与 User** | `PermissionService.GetAccessibleFilesQuery` 只判断 `KeyType == "Admin"` vs 其他，两类非 Admin 共享"只看自己"的过滤；后台清理策略不同（Temporary 过期删文件，User 过期不删）需另行处理 | 文档同步三种 KeyType 语义；`PermissionService` 行为差异仅在后台清理上体现（见 `BackgroundCleanupService` 与 `AdminController.CleanupExpired`），暂时不强制重构 |
+
+## 6. 教训总结
+
+### 6.1 核心教训
 
 1. **多 Agent 并行开发的最大风险是 DI 注册遗漏**（Bug #3、#4）。Agent 各自创建接口+实现+中间件，但 DI 注册在共享的 `Program.cs` 中，容易遗漏。建议：新增服务后立即写 DI 注册测试。
 
@@ -227,6 +274,10 @@ System.IO.File.SetUnixFileMode(filePath,
 6. **数据 vs 代码问题要分清**（公开访问踩坑）。老密文无法解密是数据问题，改代码无效，需重传文件。
 
 7. **WebSocket 接收必须处理分片（EndOfMessage）**（公开访问踩坑）。`ReceiveAsync` 的接收缓冲区小于单帧大小时会截断帧，且 `EndOfMessage=false` 表示还有数据要读；Text 分支做了累积，Binary 分支漏掉同样处理导致大帧（帧头+数据 > 缓冲区）尾部丢失。凡涉及 WS 传输，接收循环必须对两种消息类型一致地累积到 `EndOfMessage` 再解析。
+
+8. **凭据语义需保持端点一致**（Bug #8、运维踩坑 #2）。同一个参数（`expireMinutes`）在 `CreateKey` 与 `RenewKey` 表现不同就是高危信号；"0 表示不过期"必须显式声明并复用，不能依赖 `AddMinutes(0)` 这种"自然产生"的语义。
+
+9. **本地含密钥的配置文件应一律 `.gitignore`**（运维踩坑 #3）。`.mcp.json` 这类部署相关、本地唯一的配置不能入仓，必须用 `.example` 模板代替；密钥应通过环境变量注入而非明文落盘。
 
 ### 5.2 类型分布
 

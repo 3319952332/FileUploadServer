@@ -1,8 +1,125 @@
 # 开发日志
 > 用途：按日期记录每次开发的完整过程、决策与产出，便于追溯和新人了解项目演进
-> 创建：2026-08-02 | 关联：[01-architecture.md](01-architecture.md)、[11-deployment.md](11-deployment.md)、[12-bug-tracker.md](12-bug-tracker.md)、[13-mcp-baseline.md](13-mcp-baseline.md)
+> 创建：2026-08-02 | 最近更新：2026-10-01 | 关联：[01-architecture.md](01-architecture.md)、[11-deployment.md](11-deployment.md)、[12-bug-tracker.md](12-bug-tracker.md)、[13-mcp-baseline.md](13-mcp-baseline.md)
 
 > **说明**：本文件按日期追加，最新日志在顶部。每次开发结束后在文件尾部新增一节。
+
+---
+
+## 2026-10-01
+
+**记录范围**：Admin Key 重建 + 桌面端 MCP 重新接入 + 文档同步
+**提交**：未生成提交（仅本地配置 + 文档变更，见下方）
+
+### 一、事件背景
+
+两个独立但同因触发：
+1. **文件管理桌面客户端登不上**：客户端配置中保存的某个 Admin Key（数据库 ID 26/28，描述 `account:admin`）已被软删除（`isDeleted=true`），所有 `?key=...` 调用返回 401。
+2. **桌面端 MCP 服务断了**：Claude Code 的 MCP 进程未启动 / 配置丢失，工具列表为空。
+
+### 二、现状盘点（远端 SSH）
+
+```bash
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 "curl http://localhost:7000/api/admin/keys"
+```
+
+| 密钥 | 类型 | 状态 | 用途 |
+|---|---|---|---|
+| ID 20 | Admin | ✅ 未删、2216 年过期 | `file-upload-mcp-master`（MCP Master Key） |
+| ID 26, 28 | Admin | ❌ 已软删 | `account:admin`（桌面客户端的凭据） |
+| ID 30 | User | ✅ 未删 | `qingban-server` |
+| 其它 Admin | Admin | 过期/软删 | 历史测试残留 |
+
+**结论**：MCP Master Key 仍有效，问题仅在"客户端持有的 Admin Key"——需要新建并下发。
+
+### 三、关键发现：Bug #8 — `CreateKey` 对 `expireMinutes=0` 创建立即过期
+
+按惯性传 `expireMinutes=0` 表示"永不过期"（历史 ID 20 就是这么建的，过期时间 2216-09-20），结果第一次创建的新密钥（ID 31）`ExpiresAt` 等于 `CreatedAt`（差 1ms），立刻失效。`GET /api/files?key=...` 返回 401。
+
+**根因**：`AdminController.CreateKey`（`AdminController.cs:47-77`）直接 `ExpiresAt = DateTime.UtcNow.AddMinutes(expireMinutes)`，传 0 即为 0。`RenewKey` 同文件 117-121 行已显式拒绝 `<=0`，但 `CreateKey` 漏掉了同样的边界检查。
+
+详见 [12-bug-tracker.md #8](12-bug-tracker.md) — 已记录，建议按 `expireMinutes <= 0 ⇒ AddYears(200)` 修复，与 RenewKey 边界对齐。
+
+**临时方案**：传 `expireMinutes=525600`（1 年）创建长效密钥，符合 Admin 密钥本就不应被自动清理的语义。
+
+### 四、恢复操作
+
+#### 4.1 创建文件管理客户端专用 Admin Key
+
+```bash
+ssh -i ~/.ssh/CouldServer_1.pem ubuntu@111.229.53.125 \
+  "curl -X POST 'http://localhost:7000/api/admin/keys?description=file-management-client-admin&expireMinutes=525600&keyType=Admin'"
+```
+
+**输出**（**密钥值已脱敏**，仅本地 `.mcp.json` 与客户端配置保留）：
+```json
+{
+  "id": 32,
+  "key": "<已脱敏，详见本地 .mcp.json>",
+  "description": "file-management-client-admin",
+  "createdAt": "2026-10-01T11:05:19.8163844Z",
+  "expiresAt": "2027-10-01T11:05:19.8163846Z",
+  "isDeleted": false,
+  "keyType": "Admin"
+}
+```
+
+验证：`curl 'http://localhost:7000/api/files?key=<新 Admin Key>&pageSize=1'` → `HTTP 200`（本地命令执行历史可查）。
+
+随后清理掉因 `expireMinutes=0` 立即过期的 ID 31 及其它历史过期/已删密钥：`DELETE /api/admin/keys/cleanup` 返回 12（一次性清掉 12 条）。
+
+#### 4.2 桌面端 MCP 重新接入
+
+仓库此前没有 `.mcp.json`（仅凭本机残留配置 + MCP Master Key 工作，机器重装即丢）。本次新增：
+
+- **`.mcp.json`**（**`.gitignore`**）：当前生效的配置，含真实 Master Key
+  ```json
+  {
+    "mcpServers": {
+      "file-upload-server": {
+        "command": "dotnet",
+        "args": ["run", "--project", "E:/Code/FileUploadServer/FileUploadServer.Mcp/FileUploadServer.Mcp.csproj"],
+        "env": {
+          "FILE_SERVER_BASE_URL": "https://file.sub.opengm.top",
+          "FILE_SERVER_MASTER_KEY": "<MCP Master Key，ID 20，长期有效，从本地 .mcp.json 读>"
+        }
+      }
+    }
+  }
+  ```
+- **`.mcp.json.example`**（可入仓）：脱敏模板，`<Admin Key from /api/admin/keys (keyType=Admin)>` 占位
+- **`.gitignore`** 增补：`.mcp.json` 一律不追踪
+
+**验证 MCP Server 启动 + 链路**：
+
+```powershell
+$env:FILE_SERVER_BASE_URL = "https://file.sub.opengm.top"
+$env:FILE_SERVER_MASTER_KEY = "<MCP Master Key，ID 20>"
+@(
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}'
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"file_list","arguments":{}}}'
+) | dotnet run --project FileUploadServer.Mcp/FileUploadServer.Mcp.csproj
+```
+
+结果：`initialize` 1ms 成功；`tools/list` 返回 6 个工具；`file_list` 返回完整文件列表（HTTP 200 + JSON 数组）。MCP 链路通畅。
+
+桌面端 Claude Code 只需重启即可读取新 `.mcp.json`，无需手工干预。
+
+### 五、文档同步
+
+- **doc/03-permission.md** — 新增 User KeyType 描述（之前文档只有 Admin/Temporary，与代码 `ApiKeyType.cs` 不一致）
+- **doc/12-bug-tracker.md** — 新增 Bug #8（`expireMinutes=0` 边界回归）；新增第 5 章"运维/密钥管理踩坑"4 条；更新教训总结至 9 条
+- **doc/14-dev-log.md** — 本节
+- **.gitignore** — `.mcp.json` 加入不追踪列表
+
+### 六、后续待办（未提交代码改动）
+
+| # | 事项 | 优先级 |
+|---|---|---|
+| 1 | 修复 Bug #8：`CreateKey` 对 `expireMinutes<=0` 显式声明"永不过期"语义，与 `RenewKey` 边界对齐 | 中 |
+| 2 | 把 `.mcp.json.example` 的占位规则写进 `.claude/skills/file-upload-server-mcp/SKILL.md` | 低 |
+| 3 | 文件管理桌面端集成 Admin Key 自动续期接口 `PUT /api/admin/keys/{key}/renew`，避免 1 年后再失效 | 中 |
 
 ---
 

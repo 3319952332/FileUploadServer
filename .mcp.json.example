@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "file-upload-server": {
+      "command": "dotnet",
+      "args": ["run", "--project", "<REPO>/FileUploadServer.Mcp/FileUploadServer.Mcp.csproj"],
+      "env": {
+        "FILE_SERVER_BASE_URL": "https://file.sub.opengm.top",
+        "FILE_SERVER_MASTER_KEY": "<Admin Key from /api/admin/keys (keyType=Admin)>"
+      }
+    }
+  }
+}
