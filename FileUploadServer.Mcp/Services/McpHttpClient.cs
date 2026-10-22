@@ -45,7 +45,7 @@ public sealed class McpHttpClient : IDisposable
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(timeout);
-                var request = new HttpRequestMessage(method, BuildUrl(endpoint)) { Content = content };
+                var request = CreateRequest(method, endpoint, content);
                 var response = await _httpClient.SendAsync(request, cts.Token);
 
                 // 仅 5xx 重试；4xx 与成功直接返回
@@ -97,7 +97,7 @@ public sealed class McpHttpClient : IDisposable
         cts.CancelAfter(timeout);
         try
         {
-            var request = new HttpRequestMessage(method, BuildUrl(endpoint)) { Content = content };
+            var request = CreateRequest(method, endpoint, content);
             return await _httpClient.SendAsync(request, cts.Token);
         }
         catch (TaskCanceledException)
@@ -115,14 +115,25 @@ public sealed class McpHttpClient : IDisposable
     }
 
     /// <summary>
-    /// 拼接带鉴权的 URL：{baseUrl}{endpoint}?key={MasterApiKey}。
+    /// 构造带鉴权请求：凭据放在 <c>X-API-Key</c> 请求头，不再拼进查询串
+    /// （查询串会落入 Nginx 访问日志、浏览器历史与 Referer）。
     /// 不用 HttpUtility.ParseQueryString（System.Web，.NET Core 不可用）。
     /// </summary>
+    private HttpRequestMessage CreateRequest(HttpMethod method, string endpoint, HttpContent? content)
+    {
+        var request = new HttpRequestMessage(method, BuildUrl(endpoint)) { Content = content };
+        request.Headers.TryAddWithoutValidation(ApiKeyHeaderName, _config.MasterApiKey);
+        return request;
+    }
+
+    /// <summary>凭据请求头名称，与网关 ApiKeyAuthMiddleware 保持一致。</summary>
+    private const string ApiKeyHeaderName = "X-API-Key";
+
+    /// <summary>拼接请求 URL（不含鉴权参数）。</summary>
     private string BuildUrl(string endpoint)
     {
         var baseUrl = _config.FileServerBaseUrl.TrimEnd('/');
-        var sep = endpoint.Contains('?') ? "&" : "?";
-        return $"{baseUrl}{endpoint}{sep}key={Uri.EscapeDataString(_config.MasterApiKey)}";
+        return $"{baseUrl}{endpoint}";
     }
 
     private async Task DelayBeforeRetryAsync(int attempt, CancellationToken ct)

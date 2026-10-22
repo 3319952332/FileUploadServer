@@ -82,8 +82,7 @@
                                 <td>
                                     <div class="d-flex flex-row gap-1">
                                         <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary" download>⬇️ 下载</a>
-                                        <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0" onsubmit="return confirm('确定要删除这个文件吗？');">
-                                            <input type="hidden" name="key" value="@currentKey" />
+                                        <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" asp-route-key="@currentKey" class="m-0 p-0" onsubmit="return confirm('确定要删除这个文件吗？');">
                                             <button type="submit" class="btn btn-sm btn-outline-danger">🗑️ 删除</button>
                                         </form>
                                     </div>
@@ -109,8 +108,7 @@
                         <div class="card-footer p-1">
                             <div class="d-flex gap-1">
                                 <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary flex-fill" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;" download>⬇️</a>
-                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0 flex-fill" onsubmit="return confirm('确定要删除这个文件吗？');">
-                                    <input type="hidden"name="key" value="@currentKey" />
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" asp-route-key="@currentKey" class="m-0 p-0 flex-fill" onsubmit="return confirm('确定要删除这个文件吗？');">
                                     <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;">🗑️</button>
                                 </form>
                             </div>
@@ -125,8 +123,7 @@
                         <div class="card-footer p-1">
                             <div class="d-flex gap-1">
                                 <a href="/Download/@file.Id?key=@currentKey" class="btn btn-sm btn-outline-primary flex-fill" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;" download>⬇️</a>
-                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0 flex-fill" onsubmit="return confirm('确定要删除这个文件吗？');">
-                                    <input type="hidden"name="key" value="@currentKey" />
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" asp-route-key="@currentKey" class="m-0 p-0 flex-fill" onsubmit="return confirm('确定要删除这个文件吗？');">
                                     <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="font-size: 0.65rem; padding: 0.15rem 0.3rem;">🗑️</button>
                                 </form>
                             </div>
@@ -147,8 +144,7 @@
                             </div>
                             <div class="d-grid gap-1">
                                 <a href="/Download/@file.Id?key=@currentKey" class="btn btn-outline-primary" style="font-size: 0.7rem; padding: 0.2rem 0.4rem;" download>⬇️ 下载</a>
-                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" class="m-0 p-0" onsubmit="return confirm('确定要删除这个文件吗？');">
-                                    <input type="hidden" name="key" value="@currentKey" />
+                                <form method="post" asp-page-handler="Delete" asp-route-id="@file.Id" asp-route-key="@currentKey" class="m-0 p-0" onsubmit="return confirm('确定要删除这个文件吗？');">
                                     <button type="submit" class="btn btn-outline-danger w-100" style="font-size: 0.7rem; padding: 0.2rem 0.4rem;">🗑️ 删除</button>
                                 </form>
                             </div>
@@ -182,8 +178,7 @@
 <div class="modal fade" id="uploadModal" tabindex="-1" aria-labelledby="uploadModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
-            <form method="post" enctype="multipart/form-data" asp-page="Index">
-                <input type="hidden" name="key" value="@currentKey" />
+            <form method="post" enctype="multipart/form-data" asp-page="Index" asp-route-key="@currentKey">
                 <div class="modal-header">
                     <h5 class="modal-title" id="uploadModalLabel">上传文件</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -358,18 +353,11 @@ function confirmBatchDelete(key) {
         return;
     }
     
-    // 创建form提交批量删除
+    // 创建form提交批量删除（key 走查询串：请求体在鉴权阶段不解析，凭据不能放表单体）
     const form = document.createElement('form');
     form.method = 'post';
-    form.action = window.location.pathname + '?handler=BatchDelete';
-    
-    // 添加key
-    const inputKey = document.createElement('input');
-    inputKey.type = 'hidden';
-    inputKey.name = 'key';
-    inputKey.value = key;
-    form.appendChild(inputKey);
-    
+    form.action = window.location.pathname + '?handler=BatchDelete&key=' + encodeURIComponent(key);
+
     // 添加ids
     selectedIds.forEach(id => {
         const input = document.createElement('input');

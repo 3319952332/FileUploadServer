@@ -21,17 +21,24 @@ Environment.SetEnvironmentVariable("TZ", "Asia/Shanghai");
 
 var builder = WebApplication.CreateBuilder(args);
 
-// 配置最大请求大小 1GB
+// 请求体上限（默认 1GB，可通过配置 Upload:MaxRequestBodySize 覆盖）
+var maxRequestBodySize = builder.Configuration.GetValue<long?>("Upload:MaxRequestBodySize")
+    ?? ApiKeyAuthMiddleware.DefaultMaxRequestBodySize;
+
+// 配置请求体与 multipart 解析上限
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
 {
-    options.ValueLengthLimit = int.MaxValue;
-    options.MultipartBodyLengthLimit = 1073741824; // 1GB
-    options.MemoryBufferThreshold = 10485760; // 10MB in memory before streaming to disk
+    // 表单值（不含文件内容）限制在 64KB：鉴权已不再从表单取 key，无需放开
+    options.ValueLengthLimit = 65536;
+    options.MultipartBodyLengthLimit = maxRequestBodySize;
+    // 超过 1MB 的分段直接落盘，抑制 multipart 内存缓冲（CVE-2026-70181）
+    options.MemoryBufferThreshold = 1048576; // 1MB
+    options.MultipartHeadersLengthLimit = 32768;
 });
 
 builder.WebHost.ConfigureKestrel(options =>
 {
-    options.Limits.MaxRequestBodySize = 1073741824; // 1GB
+    options.Limits.MaxRequestBodySize = maxRequestBodySize;
 });
 
 // Add services to the container.
@@ -134,13 +141,13 @@ builder.Services.AddSwaggerGen(options =>
         Description = "简单的HTTP文件上传下载服务，支持列表查询、上传、下载、删除"
     });
     
-    // 添加API Key支持（query参数）
+    // 添加API Key支持（请求头）
     options.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
     {
         Type = SecuritySchemeType.ApiKey,
-        Name = "key",
-        In = ParameterLocation.Query,
-        Description = "输入临时API密钥"
+        Name = ApiKeyAuthMiddleware.ApiKeyHeaderName,
+        In = ParameterLocation.Header,
+        Description = $"API 密钥（推荐 {ApiKeyAuthMiddleware.ApiKeyHeaderName} 请求头；?key= 查询参数仅作兼容保留）"
     });
     
     options.AddSecurityRequirement(new OpenApiSecurityRequirement

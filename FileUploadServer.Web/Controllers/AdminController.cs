@@ -6,6 +6,7 @@ using FileUploadServer.Infrastructure.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using FileUploadServer.Web.Middleware;
 
 namespace FileUploadServer.Web.Controllers;
 
@@ -159,7 +160,8 @@ public class AdminController : ControllerBase
     /// <summary>
     /// 设置文件公共访问标记（公网可达的受控例外，供 MCP file_set_public 使用）。
     /// /api/admin/* 被鉴权中间件跳过且被 nginx ACL 整体屏蔽，本路由独立于 admin 前缀、
-    /// 在网关单独放行：请求必须携带有效 Admin 类型 API Key（?key= 查询参数），localhost 免 key。
+    /// 在网关单独放行：请求必须携带有效 Admin 类型 API Key（推荐 X-API-Key 请求头，
+    /// 兼容 ?key= 查询参数），localhost 免 key。
     /// publicPath 必须以配置的公共模式前缀（如 /public/）开头——URL 约定为 /p + publicPath，
     /// 不匹配模式的路径会被 PublicFileMiddleware 静默 404，故在写入前强制校验。
     /// </summary>
@@ -172,7 +174,14 @@ public class AdminController : ControllerBase
     {
         if (!IsLocalRequest())
         {
-            var apiKey = await ResolveAdminKeyAsync(key);
+            // 凭据优先取 X-API-Key 请求头，兼容 ?key= 查询参数
+            var credential = key;
+            if (string.IsNullOrWhiteSpace(credential))
+            {
+                credential = Request.Headers[ApiKeyAuthMiddleware.ApiKeyHeaderName].FirstOrDefault();
+            }
+
+            var apiKey = await ResolveAdminKeyAsync(credential);
             if (apiKey == null)
             {
                 return StatusCode(StatusCodes.Status403Forbidden,

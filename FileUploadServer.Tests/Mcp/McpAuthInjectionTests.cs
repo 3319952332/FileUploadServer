@@ -18,8 +18,11 @@ public class McpAuthInjectionTests
 
         await fake.CallToolAsync("file_list");
 
-        var query = fake.HttpHandler.LastRequest.RequestUri!.Query;
-        Assert.Contains("key=auth-key-123", query);
+        var request = fake.HttpHandler.LastRequest;
+        // 凭据走 X-API-Key 请求头
+        Assert.Equal("auth-key-123", request.Headers.GetValues("X-API-Key").Single());
+        // 不再拼进查询串（避免落入访问日志 / 浏览器历史 / Referer）
+        Assert.DoesNotContain("key=", request.RequestUri!.Query);
     }
 
     // ------------------------------------------------------------------ AUTH-02
