@@ -350,6 +350,71 @@ WebSocket 接收循环必须处理分片：当接收缓冲区小于单帧大小�
 
 **验证**：全局 grep 复查，仅历史日志 / MCP 错误码保留「屏蔽/不可达」字样，无现状描述残留。
 
+### 十二、.NET 10.0.13 运行时安全升级（网关 + 认证服务）
+
+**日期**：2026-10-22 | **提交**：`890a234`（chore(security): 固定自包含运行时 10.0.13 并对齐 EF Core/Npgsql 补丁版本）
+
+#### 12.1 背景
+
+服务器 4 个 .NET 服务中，网关（7000）与认证服务（7100）是 **self-contained** 发布，各自内置 .NET 10.0.9 运行时。
+宿主机 `/usr/share/dotnet` 升级**不会**修复它们——不重新发布就等于带着旧运行时继续跑在公网。
+参照 [WebDoor 评估报告](https://github.com/) 与微软 2026-10-13 维护公告，修复版本为 **10.0.13**（含 ASP.NET Core）。
+
+#### 12.2 变更
+
+| 项 | 变更前 | 变更后 |
+|----|--------|--------|
+| 网关运行时 | 10.0.9（内置） | **10.0.13**（内置） |
+| 认证服务运行时 | 10.0.9（内置） | **10.0.13**（内置） |
+| SDK | 10.0.400-preview（不可用于出补丁版本） | **10.0.402**（内置运行时 10.0.13） |
+| Microsoft.EntityFrameworkCore(.Design/.Sqlite/.Tools) | 10.0.5 | 10.0.13 |
+| Npgsql.EntityFrameworkCore.PostgreSQL | 10.0.1 | 10.0.2 |
+
+代码侧：`FileUploadServer.Web.csproj` 与 `FileUploadServer.Auth.csproj` 写死
+`<RuntimeFrameworkVersion>10.0.13</RuntimeFrameworkVersion>`，并显式声明
+`<ServerGarbageCollection>true</ServerGarbageCollection>`（与线上 runtimeconfig 的 `System.GC.Server` 保持一致）。
+
+#### 12.3 部署方式改为「目录整体切换」
+
+原流程是覆盖式上传，导致线上目录堆积了历史残留：Tests 程序集、coverlet、`createdump.exe`、win-x64 的 `.exe`、
+多 RID 目录（alpine/arm64/macos/x86）。本次改为：
+
+**停服 → 旧目录改名备份 → 解压新包 → 恢复生产配置与数据 → 权限 → 启动 → 验证**
+
+要点：
+- 打包时排除 `appsettings*.json`，生产配置与 `encryption.key` 只在远端，从备份目录 `cp -p` 恢复
+- `wwwroot/uploads`（本地存储的历史文件）随目录一并带过去
+- Windows 打的 tar 不带可执行位，远端必须 `chmod 755` 可执行文件、`chmod 600 encryption.key`
+- 回滚 = 把 `.bak-<TS>` 目录换回并重启，秒级完成
+
+#### 12.4 踩坑
+
+1. **跨平台发布必须指定 RID**：`--self-contained true` 不带 `-r linux-x64` 时会按开发机 RID（win-x64）产出，产物在 Linux 上起不来
+2. **预览版 SDK 不能出安全补丁**：`10.0.400-preview` 内置的不是 10.0.13，必须另装稳定 SDK `10.0.402`
+3. **`pgrep -f` 会匹配到 SSH 命令行自身**：停服务改用 `ss -tlnp` 按端口取 PID（见 [11-deployment.md](11-deployment.md) §8.1）
+4. **从 PowerShell 管道喂 bash 脚本会带 BOM 和 CRLF**：`bash` 报 `set: command not found` 或文件名带 `\r`。
+   远程脚本用 base64 传输：`echo '<base64>' | base64 -d | bash`
+5. **`set -euo pipefail` + `| head` 会因 SIGPIPE（exit 141）中断脚本**，校验脚本里不要把 `head` 和 `set -e` 混用
+
+#### 12.5 验证结果
+
+| 检查项 | 结果 |
+|--------|------|
+| runtimeconfig `includedFrameworks` | 10.0.13（两个服务） |
+| `libcoreclr.so` 版本串 | 10.0.13（两个服务） |
+| 进程 / 端口 | 7000、7100 均在听 |
+| 接口 | 网关 `/` → 401、`/swagger` → 200；认证 `/api/auth/me` → 401 |
+| WS 存储节点 | 网关重启后自动重连，`isOnline=true` |
+| 端到端 | MCP 上传 → WS 节点存储 → 下载，内容一致（随后已删除测试文件） |
+| 公网 | file.sub → 401 / Swagger 200；filelogin.sub → 404（无根路由）/ me 401 |
+
+#### 12.6 遗留建议（未实施，属功能改动）
+
+- `ApiKeyAuthMiddleware` 在校验 key **之前**读取 `Request.Form`，multipart 会在鉴权前被解析；
+  建议把凭据改到请求头/查询参数，并在解析前限制请求体大小
+- 7000 端口目前可绕过 Nginx 直连公网，建议收紧
+- `FileUploadServer.Infrastructure` 仍引用 `Microsoft.EntityFrameworkCore.Sqlite`，与「只用 PostgreSQL」的项目规则不符，可评估移除
+
 ## 关联文档
 
 - [01-architecture.md](01-architecture.md) — 架构总览

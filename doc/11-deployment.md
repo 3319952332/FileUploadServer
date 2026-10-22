@@ -12,6 +12,7 @@
 7. [部署注意事项](#7-部署注意事项)
 8. [运维命令速查](#8-运维命令速查)
 9. [已知部署问题](#9-已知部署问题)
+10. [自包含运行时基线与认证服务部署](#10-自包含运行时基线与认证服务部署)
 
 ## 1. 三种部署模式
 
@@ -48,6 +49,7 @@
 | 角色 | 地址 | 访问方式 | 部署目录 |
 |------|------|----------|----------|
 | **网关（Web）** | HTTP `111.229.53.125:7000` / HTTPS `file.sub.opengm.top`（Nginx 反代） | `ubuntu` + `~/.ssh/CouldServer_1.pem` | `/home/ubuntu/fileuploadserver/` |
+| **认证服务（Auth）** | `127.0.0.1:7100` / HTTPS `filelogin.sub.opengm.top`（Nginx 反代，公网不开 7100 端口） | 同上 | `/home/ubuntu/authserver/` |
 | **WS 存储节点** | `192.168.1.4` | `laowang` + `~/.ssh/id_rsa_self` 公钥免密 | 程序 `/home/laowang/wsclient/`，数据 `/home/laowang/wsdata/` |
 | **PostgreSQL** | 网关本机 `5432` | `postgres` | 数据库 `fileupload` |
 | **MCP Server** | 本地（stdio） | 配置到 Claude Code | 无需远程部署 |
@@ -370,6 +372,8 @@ dotnet publish FileUploadServer.Mcp/FileUploadServer.Mcp.csproj -c Release -o pu
 6. **WsClient 单实例**：同一 client-id 只跑 1 个进程
 7. **部署前 git 提交**：确保远端代码可追溯、可回退
 8. **安全网**：上传前备份 `appsettings.json` / `encryption.key`，启动验证通过后再删 `.bak`
+9. **自包含运行时基线**：网关与认证服务都是 self-contained 发布，**宿主机的 .NET 运行时升级不会修复它们**，必须用带安全补丁的 SDK 重新发布（见 [§10](#10-自包含运行时基线与认证服务部署)）
+10. **发布必须指定 RID**：`--self-contained true` 不带 `-r linux-x64` 会按开发机 RID（win-x64）产出，跑在 Linux 上直接起不来
 
 ## 8. 运维命令速查
 
@@ -378,17 +382,26 @@ dotnet publish FileUploadServer.Mcp/FileUploadServer.Mcp.csproj -c Release -o pu
 ```bash
 # 启动网关
 cd /home/ubuntu/fileuploadserver
-nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 2>&1 & echo $! > fileupload.pid
+setsid nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 2>&1 < /dev/null &
 
-# 停止网关（精确匹配，避免 pkill -f 误杀 SSH 会话）
-PID=$(pgrep -f '\./FileUploadServer\.Web' | head -1)
-[ -n "$PID" ] && kill -9 $PID
+# 启动认证服务
+cd /home/ubuntu/authserver
+setsid nohup ./FileUploadServer.Auth --urls http://0.0.0.0:7100 > authserver.log 2>&1 < /dev/null &
+
+# 停止服务（按监听端口定位 PID，pkill/pgrep -f 会匹配到 SSH 命令行自身）
+get_pid() { ss -tlnp 2>/dev/null | grep ":$1 " | grep -oP 'pid=\K[0-9]+' | head -1; }
+PID=$(get_pid 7000); [ -n "$PID" ] && kill "$PID"
+PID=$(get_pid 7100); [ -n "$PID" ] && kill "$PID"
 
 # 查看网关进程
 ps aux | grep '[F]ileUploadServer.Web'
 
 # 查看端口
 ss -tlnp | grep ':7000'
+
+# 查看当前实际加载的运行时版本（自包含应用加载的是发布目录内的 libcoreclr.so）
+cat /home/ubuntu/fileuploadserver/FileUploadServer.Web.runtimeconfig.json | grep version
+strings -a /home/ubuntu/fileuploadserver/libcoreclr.so | grep -oE '^10\.0\.[0-9]+$' | sort -u
 ```
 
 ### 8.2 日志查看
@@ -541,6 +554,120 @@ curl -s "https://file.sub.opengm.top/api/files?key=<ADMIN_KEY>" | head -c 200
 
 - 同一 client-id 的多个 WsClient 进程反复断连（`Disconnected: Connection lost`）
 - 解决：确保同一 client-id 只跑 1 个进程
+
+## 10. 自包含运行时基线与认证服务部署
+
+> 适用：网关（7000）与认证服务（7100）都是 **self-contained** 发布，运行时装在发布目录里。
+> 宿主机 `/usr/share/dotnet` 升级不会影响它们——不重新发布，漏洞就一直存在。
+
+### 10.1 运行时基线
+
+| 项 | 值 |
+|----|-----|
+| 基线运行时 | **.NET 10.0.13**（2026-10-13 安全更新，含 ASP.NET Core） |
+| 配套稳定 SDK | **10.0.402**（SDK 内置运行时 10.0.13） |
+| 固定方式 | `FileUploadServer.Web.csproj` / `FileUploadServer.Auth.csproj` 写死 `<RuntimeFrameworkVersion>10.0.13</RuntimeFrameworkVersion>` |
+| GC | `<ServerGarbageCollection>true</ServerGarbageCollection>`，与线上 runtimeconfig 的 `System.GC.Server` 保持一致 |
+
+> ⚠️ 预览版 SDK（如 `10.0.400-preview`）**不能**用于出安全补丁版本，必须用稳定版 SDK。
+> `RuntimeFrameworkVersion` 写死后，即使换 SDK 也不会静默回退到旧运行时。
+
+### 10.2 本地发布（Windows / macOS / Linux 通用）
+
+```bash
+# 使用带 10.0.13 运行时的稳定 SDK
+DOTNET=E:/Code/tools/dotnet-10.0.402/dotnet.exe     # Windows 示例
+
+# 网关（必须带 -r linux-x64）
+$DOTNET publish FileUploadServer.Web/FileUploadServer.Web.csproj \
+  -c Release -r linux-x64 --self-contained true -o publish/web
+
+# 认证服务
+$DOTNET publish FileUploadServer.Auth/FileUploadServer.Auth.csproj \
+  -c Release -r linux-x64 --self-contained true -o publish/auth
+```
+
+发布后核对产物：
+
+```bash
+# runtimeconfig 里的框架版本应为 10.0.13
+grep -A2 includedFrameworks publish/web/FileUploadServer.Web.runtimeconfig.json
+# ASP.NET Core 程序集版本应为 10.0.13
+powershell -c "(Get-Item publish/web/Microsoft.AspNetCore.dll).VersionInfo.ProductVersion"
+```
+
+### 10.3 远端替换（目录整体切换）
+
+流程：**停服 → 旧目录改名备份 → 解压新包 → 恢复生产配置与数据 → 权限 → 启动 → 验证**。
+不覆盖式上传，避免上一版残留文件（如 win-x64 的 `.exe`、Tests 程序集）混在新版本里。
+
+```bash
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+LIVE=/home/ubuntu/fileuploadserver
+DEPLOY=/home/ubuntu/deploy/$TS
+BAK=$LIVE.bak-$TS
+
+# 1. 停服（按端口取 PID）
+PID=$(ss -tlnp | grep ':7000 ' | grep -oP 'pid=\K[0-9]+' | head -1)
+[ -n "$PID" ] && kill $PID && sleep 3
+
+# 2. 旧目录改名备份（秒级回滚）
+mv "$LIVE" "$BAK"
+
+# 3. 解压新包
+mkdir -p "$LIVE" && tar -xzf "$DEPLOY/web.tar.gz" -C "$LIVE"
+
+# 4. 恢复生产配置与数据（appsettings/encryption.key 绝不能用本地开发版本覆盖）
+cp -p "$BAK/appsettings.json" "$LIVE/appsettings.json"
+cp -p "$BAK/encryption.key" "$LIVE/encryption.key"
+mkdir -p "$LIVE/wwwroot/uploads"
+cp -a "$BAK/wwwroot/uploads/." "$LIVE/wwwroot/uploads/"
+
+# 5. 权限（Windows 打出来的 tar 不带可执行位）
+cd "$LIVE" && chmod 755 FileUploadServer.Web createdump && chmod 600 encryption.key
+
+# 6. 启动
+setsid nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 2>&1 < /dev/null &
+```
+
+认证服务同法，把路径换成 `/home/ubuntu/authserver`、端口 `7100`、二进制 `FileUploadServer.Auth`。
+
+> ⚠️ 打包时排除 `appsettings*.json`（生产配置只在远端），本地开发配置绝不上传。
+> ⚠️ `encryption.key` 是文件加密根密钥，丢了历史密文全部不可解，任何情况下不覆盖、不删除。
+
+### 10.4 验证清单
+
+```bash
+# 运行时版本（runtimeconfig + libcoreclr 版本串双重确认）
+cat /home/ubuntu/fileuploadserver/FileUploadServer.Web.runtimeconfig.json | grep version
+strings -a /home/ubuntu/fileuploadserver/libcoreclr.so | grep -oE '^10\.0\.[0-9]+$' | sort -u
+
+# 进程与端口
+ps -eo pid,etime,args | grep '[F]ileUploadServer'
+ss -tlnp | grep -E ':7000|:7100'
+
+# 接口
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7000/            # 预期 401
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7000/swagger/index.html  # 预期 200
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7100/api/auth/me        # 预期 401
+
+# WS 节点是否自动重连（网关重启后应恢复 online）
+curl -s http://localhost:7000/api/admin/ws-clients
+```
+
+公网侧：`https://file.sub.opengm.top/` 返回 401、`/swagger` 返回 200；
+`https://filelogin.sub.opengm.top/api/auth/me` 返回 401。
+
+### 10.5 回滚
+
+```bash
+# 停新进程 → 旧目录换回 → 重新启动
+mv /home/ubuntu/fileuploadserver /home/ubuntu/fileuploadserver.failed-$TS
+mv /home/ubuntu/fileuploadserver.bak-$TS /home/ubuntu/fileuploadserver
+cd /home/ubuntu/fileuploadserver && setsid nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 2>&1 < /dev/null &
+```
+
+回滚目录在确认新版本稳定运行后再清理。
 
 ## 关联文档
 
