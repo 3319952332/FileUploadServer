@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <OutputType>Exe</OutputType>
     <RootNamespace>FileUploadServer.WsClient</RootNamespace>
+    <!-- 安全基线：自包含发布必须携带 10.0.13 运行时（2026-10-13 安全更新） -->
+    <RuntimeFrameworkVersion>10.0.13</RuntimeFrameworkVersion>
   </PropertyGroup>
 
   <ItemGroup>

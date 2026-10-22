@@ -482,10 +482,19 @@ if (string.IsNullOrEmpty(key) && context.Request.HasFormContentType)
 
 #### 13.6 遗留
 
-- WS 节点（192.168.1.4）内置运行时仍是 **10.0.6**，低于 10.0.13 基线，需另行发布
-- WS 节点的 `client-secret` 明文出现在进程命令行与启动脚本中，同机用户 `ps` 可见
 - 认证服务 7100 仍未绑回环（当前靠云安全组拦截），可同样改为 `127.0.0.1:7100`
 - 网页下载链接仍把 key 放在查询串（浏览器限制），彻底解决需改为短期下载令牌
+
+#### 13.7 收尾（同日追加）
+
+- **WS 存储节点（192.168.1.4）重建到 10.0.13**：此前仍是 10.0.6。`FileUploadServer.WsClient.csproj` 补上
+  `RuntimeFrameworkVersion=10.0.13`，用 SDK 10.0.402 发布 linux-x64 自包含包，走「目录整体切换」上线：
+  新包解压 `wsclient.new` → 交换目录 → 停旧进程 → `start-wsclient.sh` 启动（脚本内 `pgrep` 守卫防双实例）。
+  节点仍是单实例、`libcoreclr.so` 版本串 10.0.13、`/home/laowang/wsdata` 数据完好（597MB），端到端上传下载一致。
+- **认证服务改绑 `127.0.0.1:7100`**：Nginx `filelogin` 的 `proxy_pass` 本就是 `http://127.0.0.1:7100`，
+  改绑不影响公网入口；本机 `localhost:7100` 接口与错误凭据登录均正常返回 401。
+- 至此服务器上 **7000 / 7100 都只监听回环**，公网入口仅剩 443（Nginx），云安全组可关闭 7000 / 7100 入站规则。
+- WS 节点上的 `client-secret` 明文按"内网机没必要"的约定保持现状。
 
 ## 关联文档
 

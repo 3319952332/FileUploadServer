@@ -683,8 +683,10 @@ WS 节点启动脚本 `/home/laowang/wsclient/start-wsclient.sh`（cron @reboot 
 sed -i 's|--server ws://111\.229\.53\.125:7000|--server wss://file.sub.opengm.top|' /home/laowang/wsclient/start-wsclient.sh
 ```
 
-> ⚠️ WS 节点当前内置运行时是 **10.0.6**，低于本基线 10.0.13，尚未重建（需在 192.168.1.4 上另行发布）。
-> ⚠️ 节点启动命令行与脚本里明文带着 `client-secret`，同机任何用户 `ps` 可见，建议改为受限配置文件或环境变量。
+> ⚠️ WS 节点已重建到 **10.0.13**（2026-10-22，`RuntimeFrameworkVersion` 已固定在 `FileUploadServer.WsClient.csproj`）。
+> 节点同样走「目录整体切换」：新包解压到 `wsclient.new` → 交换目录 → 停旧进程 → 用 `start-wsclient.sh` 启动
+> （脚本含 `pgrep` 守卫，避免与 cron 每分钟看门狗抢跑出双实例）。
+> ⚠️ 节点启动命令行与脚本里明文带着 `client-secret`（内网机器，按当前约定保留现状）。
 
 验证：
 
