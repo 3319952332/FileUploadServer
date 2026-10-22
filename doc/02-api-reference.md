@@ -21,12 +21,20 @@
                                          ↑ 放过 /api/admin/*、/api/public/*、/p/*
 ```
 
-`ApiKeyAuthMiddleware` (`FileUploadServer.Web/Middleware/ApiKeyAuthMiddleware.cs`) 保护 `/api/files` 路由，从 query string 或 form 中读取 `key` 参数，查 `ApiKeys` 表校验有效性。
+`ApiKeyAuthMiddleware` (`FileUploadServer.Web/Middleware/ApiKeyAuthMiddleware.cs`) 保护 `/api/files` 路由，**凭据来源优先级**：
+
+1. **`X-API-Key` 请求头**（推荐）：`X-API-Key: <你的密钥>`
+2. **`?key=` 查询参数**（兼容保留）：浏览器 `<a href>` 下载链接无法自定义请求头，网页端仍依赖此方式
+
+> ⚠️ **中间件不读取请求体**。早期实现会从 form 里取 `key`，导致未鉴权请求在鉴权前触发 multipart 解析，
+> 可被用于耗尽服务端内存/磁盘（CVE-2026-70181）。表单不再是凭据来源；鉴权前另有 `Content-Length` 闸门，
+> 超过 `Upload:MaxRequestBodySize`（默认 1GB）直接返回 413。
 
 以下路径**跳过中间件、自行鉴权**：
 - `/api/admin/*` — 控制器内 `IsLocalRequest()` 检测（仅允许 127.0.0.1 和 ::1）
 - `/api/public/*` — `PublicKeysController` 自行做 IP 白名单检查
 - `/p/*` — 由 `PublicFileMiddleware` 处理（匿名访问，已启用，见 [06-public-access.md](06-public-access.md)）
+- `/api/file-public/*` — 控制器自行校验 Admin 密钥，同样支持 `X-API-Key` 请求头（见 [§4](#4-admincontroller--公开文件管理)）
 
 ### 1.2 密钥类型
 
@@ -38,9 +46,10 @@
 ### 1.3 响应格式
 
 - 成功：200/201/204 + JSON body（视端点而定）
-- 401：`Unauthorized: missing key parameter` 或 `Unauthorized: invalid or expired key`
+- 401：`Unauthorized: missing API key (use X-API-Key header)` 或 `Unauthorized: invalid or expired key`
 - 403：权限不足（非 Admin 访问他人文件、非 localhost 访问 Admin 端点、IP 不在白名单）
 - 404：资源不存在
+- 413：请求体超过 `Upload:MaxRequestBodySize`（默认 1GB），在鉴权前即被拒绝
 - 503：WS 存储节点离线
 
 ---
@@ -53,7 +62,7 @@
 ### 2.1 GET /api/files — 获取文件列表
 
 - **方法**：`GetAll()`
-- **参数**：无（通过 query string `?key=xxx` 传入密钥）
+- **参数**：无（凭据走 `X-API-Key` 请求头；兼容 `?key=xxx`）
 - **成功响应** `200`：`List<FileItem>` JSON 数组，按 `UploadedAt` 倒序
 - **权限**：Admin 密钥返回全部文件；Temporary 密钥仅返回自己上传的文件
 - **错误**：401（缺 key / key 无效或过期）

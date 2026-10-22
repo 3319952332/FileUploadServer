@@ -415,6 +415,78 @@ WebSocket 接收循环必须处理分片：当接收缓冲区小于单帧大小�
 - 7000 端口目前可绕过 Nginx 直连公网，建议收紧
 - `FileUploadServer.Infrastructure` 仍引用 `Microsoft.EntityFrameworkCore.Sqlite`，与「只用 PostgreSQL」的项目规则不符，可评估移除
 
+### 十三、鉴权加固（CVE-2026-70181 暴露面收敛）+ 对外暴露面收敛
+
+**日期**：2026-10-22 | **提交**：`1b3dff5`（fix(security): 凭据改用请求头，鉴权前不再解析请求体）
+
+#### 13.1 问题
+
+`ApiKeyAuthMiddleware` 在校验密钥**之前**读取 `Request.Form` 取 key：
+
+```csharp
+if (string.IsNullOrEmpty(key) && context.Request.HasFormContentType)
+{
+    key = context.Request.Form["key"].FirstOrDefault();   // ← 触发 multipart 解析
+}
+```
+
+`Request.Form` 会解析整个 multipart 请求体。也就是说：**未携带任何凭据的请求也能让服务端解析并缓冲上传体**，
+配合 1GB 的 multipart 上限与 10MB 内存缓冲阈值，构成 CVE-2026-70181（multipart 缓冲导致内存耗尽）的暴露面。
+同一批问题还有：凭据走查询串（落入 Nginx 访问日志 / 浏览器历史 / Referer）、7000 端口可绕过 Nginx 直连公网。
+
+#### 13.2 修复
+
+| 项 | 变更 |
+|----|------|
+| 凭据来源 | 优先 `X-API-Key` 请求头；`?key=` 查询参数仅作兼容保留（浏览器 `<a href>` 下载链接无法带请求头） |
+| 表单取 key | **删除**——鉴权阶段完全不碰请求体 |
+| 请求体闸门 | 鉴权前按 `Content-Length` 判定，超 `Upload:MaxRequestBodySize`（默认 1GB）直接 413 |
+| multipart 缓冲 | `MemoryBufferThreshold` 10MB → **1MB**（超过即落盘）；`ValueLengthLimit` 由 `int.MaxValue` → 64KB |
+| MCP 客户端 | 改为 `X-API-Key` 请求头，不再拼 `?key=` |
+| 网页端 | 上传 / 删除 / 批量删除表单的 key 改走查询串，表单体不再携带凭据 |
+| `/api/file-public` | 支持 `X-API-Key` 请求头（原本只有 `?key=`） |
+
+#### 13.3 对外暴露面收敛
+
+| 组件 | 变更前 | 变更后 |
+|------|--------|--------|
+| 网关监听 | `0.0.0.0:7000`（公网可直连） | `127.0.0.1:7000`（公网不可达） |
+| Nginx | `proxy_pass http://localhost:7000` | `proxy_pass http://127.0.0.1:7000` |
+| WS 存储节点 | `--server ws://111.229.53.125:7000` | `--server wss://file.sub.opengm.top`（经 Nginx WebSocket 升级） |
+
+> **顺序**：先切 WS 节点到 wss 并确认在线，再改绑网关。反过来做会切断 WS 节点唯一的连接通道，存储立即不可用。
+
+#### 13.4 踩坑
+
+1. **网页端表单不能直接把 key 放请求头**：浏览器原生表单无法自定义请求头。改为把 key 放进 form 的 action 查询串
+   （`asp-route-key`），Razor Pages 的 `key` 属性照常从查询串绑定。
+2. **批量删除是 JS 构造的表单**：`form.action` 需手工拼 `&key=...`，隐藏字段已移除。
+3. **测试工程引用 Web 工程**：需给测试工程加 `<FrameworkReference Include="Microsoft.AspNetCore.App" />`。
+4. **模拟"不读表单"要用特性替身**：`IFormFeature` 的 `Form` getter 直接抛异常；注入要用 `context.Features.Set<IFormFeature>(...)`，
+   因为 `context.Request.FormFeature = ...` 的赋值实现会先读一次 `value.Form`。
+
+#### 13.5 验证
+
+| 检查项 | 结果 |
+|--------|------|
+| `X-API-Key` 请求头鉴权 | 200 |
+| `?key=` 查询串兼容 | 200 |
+| 无凭据 | 401 |
+| multipart 无凭据 | 401（请求体未被解析） |
+| multipart + 请求头凭据 | 201 |
+| 公网直连 7000 | 000/503（不可达） |
+| `https://file.sub.opengm.top/` | 401；`/swagger` 200；`/api/public/files` 200 |
+| WS 节点 | 经 wss 在线（`isOnline=true`），网关日志中连接 Host 为 `file.sub.opengm.top` |
+| 端到端 | MCP 上传 → wss → WS 节点存储 → 下载，内容一致（测试文件已删除） |
+| 单元测试 | 59 通过（含新增 7 项中间件测试） |
+
+#### 13.6 遗留
+
+- WS 节点（192.168.1.4）内置运行时仍是 **10.0.6**，低于 10.0.13 基线，需另行发布
+- WS 节点的 `client-secret` 明文出现在进程命令行与启动脚本中，同机用户 `ps` 可见
+- 认证服务 7100 仍未绑回环（当前靠云安全组拦截），可同样改为 `127.0.0.1:7100`
+- 网页下载链接仍把 key 放在查询串（浏览器限制），彻底解决需改为短期下载令牌
+
 ## 关联文档
 
 - [01-architecture.md](01-architecture.md) — 架构总览

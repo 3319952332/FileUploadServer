@@ -380,9 +380,9 @@ dotnet publish FileUploadServer.Mcp/FileUploadServer.Mcp.csproj -c Release -o pu
 ### 8.1 服务管理
 
 ```bash
-# 启动网关
+# 启动网关（只绑回环，公网入口走 Nginx）
 cd /home/ubuntu/fileuploadserver
-setsid nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 2>&1 < /dev/null &
+setsid nohup ./FileUploadServer.Web --urls http://127.0.0.1:7000 > fileupload.log 2>&1 < /dev/null &
 
 # 启动认证服务
 cd /home/ubuntu/authserver
@@ -626,8 +626,8 @@ cp -a "$BAK/wwwroot/uploads/." "$LIVE/wwwroot/uploads/"
 # 5. 权限（Windows 打出来的 tar 不带可执行位）
 cd "$LIVE" && chmod 755 FileUploadServer.Web createdump && chmod 600 encryption.key
 
-# 6. 启动
-setsid nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 2>&1 < /dev/null &
+# 6. 启动（只绑回环，公网入口统一走 Nginx；WS 节点经 wss 接入）
+setsid nohup ./FileUploadServer.Web --urls http://127.0.0.1:7000 > fileupload.log 2>&1 < /dev/null &
 ```
 
 认证服务同法，把路径换成 `/home/ubuntu/authserver`、端口 `7100`、二进制 `FileUploadServer.Auth`。
@@ -642,7 +642,7 @@ setsid nohup ./FileUploadServer.Web --urls http://0.0.0.0:7000 > fileupload.log 
 cat /home/ubuntu/fileuploadserver/FileUploadServer.Web.runtimeconfig.json | grep version
 strings -a /home/ubuntu/fileuploadserver/libcoreclr.so | grep -oE '^10\.0\.[0-9]+$' | sort -u
 
-# 进程与端口
+# 进程与端口（注意：网关现在只绑 127.0.0.1）
 ps -eo pid,etime,args | grep '[F]ileUploadServer'
 ss -tlnp | grep -E ':7000|:7100'
 
@@ -651,14 +651,52 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7000/            # 预
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7000/swagger/index.html  # 预期 200
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:7100/api/auth/me        # 预期 401
 
-# WS 节点是否自动重连（网关重启后应恢复 online）
+# 鉴权方式：请求头（推荐）/ 查询串（兼容）
+curl -s -o /dev/null -w '%{http_code}\n' -H "X-API-Key: $KEY" http://localhost:7000/api/files  # 预期 200
+curl -s -o /dev/null -w '%{http_code}\n' "http://localhost:7000/api/files?key=$KEY"             # 预期 200
+
+# WS 节点是否在线（经 wss 接入）
 curl -s http://localhost:7000/api/admin/ws-clients
 ```
 
 公网侧：`https://file.sub.opengm.top/` 返回 401、`/swagger` 返回 200；
 `https://filelogin.sub.opengm.top/api/auth/me` 返回 401。
 
-### 10.5 回滚
+### 10.5 网关对外暴露面（2026-10-22 收敛）
+
+网关**只监听本机回环**，公网入口一律经 Nginx：
+
+| 组件 | 监听 | 说明 |
+|------|------|------|
+| 网关 FileUploadServer.Web | `127.0.0.1:7000` | 不再监听 `0.0.0.0`，公网无法直连 7000 |
+| Nginx | `443` → `proxy_pass http://127.0.0.1:7000` | `file.sub.opengm.top` 唯一公网入口 |
+| WS 存储节点 | 连 `wss://file.sub.opengm.top` | 经 Nginx 的 WebSocket 升级，不再直连公网 7000 |
+
+> ⚠️ 改绑顺序很重要：**先把 WS 节点切到 wss 并确认在线，再把网关改绑 127.0.0.1**。
+> 反过来做会切断 WS 节点的唯一连接通道，存储立即不可用。
+
+WS 节点启动脚本 `/home/laowang/wsclient/start-wsclient.sh`（cron @reboot + 每分钟看门狗拉起）里的
+`--server` 参数就是切换点：
+
+```bash
+# 切换为 wss（改脚本后重启节点即可）
+sed -i 's|--server ws://111\.229\.53\.125:7000|--server wss://file.sub.opengm.top|' /home/laowang/wsclient/start-wsclient.sh
+```
+
+> ⚠️ WS 节点当前内置运行时是 **10.0.6**，低于本基线 10.0.13，尚未重建（需在 192.168.1.4 上另行发布）。
+> ⚠️ 节点启动命令行与脚本里明文带着 `client-secret`，同机任何用户 `ps` 可见，建议改为受限配置文件或环境变量。
+
+验证：
+
+```bash
+# 网关侧确认连接来自 nginx（Host 为域名而非公网 IP）
+grep "ws/connect" /home/ubuntu/fileuploadserver/fileupload.log | tail -1
+
+# 公网直连 7000 应不可达
+curl -s -o /dev/null -w '%{http_code}\n' http://111.229.53.125:7000/   # 预期 000/503
+```
+
+### 10.6 回滚
 
 ```bash
 # 停新进程 → 旧目录换回 → 重新启动
